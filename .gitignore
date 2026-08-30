@@ -1,0 +1,15 @@
+# dataset — never commit (hundreds of MB, and it contains the test labels)
+KuaiRand-Pure/
+*.tar.gz
+kuairand-starter-kit.zip
+
+# agent run artifacts
+runs/
+__pycache__/
+*.pyc
+.venv/
+submission*.csv
+scores_*.csv
+
+# macOS
+.DS_Store
