@@ -16,3 +16,7 @@ scores_*.csv
 
 # agent work products (regenerable)
 work/
+
+# secrets - never commit
+.env
+*.key
