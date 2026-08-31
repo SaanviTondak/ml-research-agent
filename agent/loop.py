@@ -230,9 +230,18 @@ class AgentLoop:
             self.say("  response truncated at output limit; queued for repair")
             return self.finish_node(node, resp)
 
+        # Save the source before validating it: rejected code still belongs
+        # in the run log, and it is what the next iteration has to repair.
+        path = self.dir / "nodes" / f"node_{node_id:03d}.py"
+        path.write_text(code)
+
         # --- guard: static check before anything executes ------------------
         try:
-            assert_clean(code)
+            warnings = assert_clean(code)
+            if warnings:
+                self.log("guard_warning", node_id=node_id, status="info",
+                         detail="; ".join(f"line {ln}: {why}"
+                                          for why, ln, _ in warnings))
         except GuardRejection as e:
             node.failure_reason = str(e)
             self.log("guard_rejected", node_id=node_id, status="error",
@@ -241,8 +250,6 @@ class AgentLoop:
             return self.finish_node(node, resp)
 
         # --- run it --------------------------------------------------------
-        path = self.dir / "nodes" / f"node_{node_id:03d}.py"
-        path.write_text(code)
         out = self.dir / "artifacts" / f"scores_valid_{node_id:03d}.csv"
         r = run_script(path, ["--data_dir", self.data_dir, "--split", "valid",
                               "--out", out, "--seed", 0],

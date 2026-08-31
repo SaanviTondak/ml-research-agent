@@ -44,7 +44,8 @@ outside it beyond a short HYPOTHESIS line. Never output a partial file or a diff
 --split valid --out ...`.
 - numpy is available. torch, pandas, sklearn and lightgbm are NOT installed \
 and cannot be installed. Write the model yourself in numpy.
-- Read data ONLY from the --data_dir argument. Never hard-code a dataset path.
+- Read data ONLY from the --data_dir argument. Never hard-code a dataset \
+path, and do not give --data_dir a default value - make it required.
 - Evaluate ONLY on the 'valid' split. A held-out test split exists but is not \
 present in your data directory and must never be referenced.
 - Never modify or reimplement evaluate.py. It defines the score.
