@@ -171,7 +171,7 @@ class GeminiBackend(Backend):
         with urllib.request.urlopen(req, timeout=self.timeout_s) as r:
             return json.loads(r.read().decode())
 
-    def complete(self, system, user, temperature=0.7, max_tokens=8192):
+    def complete(self, system, user, temperature=0.7, max_tokens=32768):
         payload = {
             "contents": [{"role": "user", "parts": [{"text": user}]}],
             "generationConfig": {"temperature": temperature,
@@ -327,18 +327,27 @@ class LLM:
 
 # ------------------------------------------------------------------ parsing
 _FENCE_RE = re.compile(r"```(?:python|py)?\s*\n(.*?)```", re.DOTALL)
+_OPEN_FENCE_RE = re.compile(r"```(?:python|py)?\s*\n(.*)\Z", re.DOTALL)
 
 
 def extract_code(text):
     """Pull the python from a fenced block, tolerating chatty models.
 
-    Returns the longest fenced block - models that narrate before the code
-    often emit a short illustrative snippet first, and taking the first block
-    silently trains a broken candidate.
+    Returns the LONGEST closed fenced block: models that narrate before the
+    code often emit a short illustrative snippet first, and taking the first
+    block silently feeds a broken candidate into the loop.
+
+    Falls back to an unclosed fence, which is what a response truncated at the
+    output-token limit looks like. The result is incomplete and will not run,
+    but handing the partial script to the debug step lets the next iteration
+    finish it, instead of discarding the work entirely.
     """
     blocks = _FENCE_RE.findall(text or "")
     if blocks:
         return max(blocks, key=len).strip()
+    m = _OPEN_FENCE_RE.search(text or "")
+    if m and m.group(1).strip():
+        return m.group(1).strip()
     if text and text.lstrip().startswith(("import ", "from ", '"""', "#")):
         return text.strip()      # model skipped the fence entirely
     return None
