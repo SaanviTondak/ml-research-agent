@@ -1,27 +1,27 @@
-Built with — tags (max 25):
+Built with — 19 tags (Devpost asks for languages, platforms, frameworks,
+cloud services, databases, APIs — so these are actual technologies used,
+not research concepts).
 
 python
 numpy
 google-gemini
 gemini-api
-llm
-autonomous-agents
-agentic-ai
-machine-learning
-recommender-systems
-learning-to-rank
-information-retrieval
-factorization-machines
-bpr
-listwise-ranking
-softmax-cross-entropy
-gauc
-ndcg
-kuairand
-tiktok-techjam
-subprocess
-json-lines
-git
-macos
-cli
+google-ai-studio
+rest-api
 urllib
+subprocess
+argparse
+csv
+json
+jsonl
+hashlib
+difflib
+bash
+git
+github
+macos
+kuairand
+
+Deliberately absent: pytorch, tensorflow, pandas, scikit-learn, lightgbm.
+The entire model stack is numpy on one CPU core — 0 GPU-hours. Worth
+mentioning in conversation with judges rather than padding the tag list.
