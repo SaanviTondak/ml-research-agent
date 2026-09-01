@@ -111,10 +111,10 @@ switched from a pairwise to a listwise objective. We added a floor of scored
 attempts before the rule may fire, and left eps and N untouched.
 
 The last two required human fixes, and both are recorded as manual
-interventions. **The count is {{INTERVENTIONS}}, not zero.** Neither was the
+interventions. **The count is 2, not zero.** Neither was the
 agent failing — both were our infrastructure failing in ways the agent could not
 repair itself. We report it that way because an unexplained zero costs more
-credibility than an explained {{INTERVENTIONS}}.
+credibility than an explained 2.
 
 ## Accomplishments that we're proud of
 
@@ -145,14 +145,18 @@ reasoning, including the two that were our own bugs.
 | random | 0.4834 | 0.4757 |
 | item popularity | 0.5807 | 0.5715 |
 | FM baseline | 0.6016 | 0.5946 |
-| **ML Research Agent** | **{{FINAL_VALID}}** | **{{FINAL_TEST}}** |
+| **ML Research Agent** | **0.6042** | **0.5983** |
 | oracle ceiling | 0.8484 | 0.8645 |
 
-{{RESULTS_NOTE}}
+The submitted model is the agent's node #4, selected on validation and verified across 3 seeds (0.6042 ± 0.0004) before being scored on test once. Its test primary of 0.5983 beats the FM baseline by **+0.0037**, which is +1.4% of the headroom the baseline left below the oracle ceiling.
 
-**Resources:** {{ITERATIONS}} iterations of 50 · {{WALLCLOCK}} wall-clock of a
-6 h cap · {{TOKENS}} LLM tokens · **0 GPU-hours** (numpy on one CPU core) ·
-{{INTERVENTIONS}} manual interventions.
+A later attempt (node #7) scored marginally higher on validation (0.6046) but on a single seed. The difference of +0.0004 is well inside the benchmark's 0.0008 seed noise, so the seed-verified candidate was submitted instead. Choosing the higher unverified number would have been chasing luck — the exact failure the multi-seed rule exists to prevent.
+
+Test was scored once, on a single seed: the first seed took 25 minutes on the full dataset and the remaining two were abandoned to the submission deadline. Validation selection was still 3-seed verified.
+
+**Resources:** 34 iterations of 50 · 0.97 h wall-clock of a
+6 h cap · 733,802 LLM tokens · **0 GPU-hours** (numpy on one CPU core) ·
+2 manual interventions.
 
 ## What we learned
 

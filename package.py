@@ -28,6 +28,16 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--run_dir", required=True)
     ap.add_argument("--out", default="submission")
+    ap.add_argument("--interventions", type=int, default=None,
+                    help="true count of human interventions. The loop's own "
+                         "run_end record is always 0 - it cannot observe a "
+                         "human editing its code between runs - so reporting "
+                         "that number unqualified would be false. Source of "
+                         "truth is docs/interventions.md.")
+    ap.add_argument("--best_node", type=int, default=None,
+                    help="node actually submitted; defaults to the raw "
+                         "highest scorer, which may be a single-seed result "
+                         "that a seed-verified node should outrank")
     a = ap.parse_args()
 
     run = Path(a.run_dir)
@@ -37,7 +47,7 @@ def main():
     state = SolutionJournal(run / "state.json")
     journal = Journal(run / "journal.jsonl")
     records = journal.read()
-    best = state.best()
+    best = state.get(a.best_node) if a.best_node is not None else state.best()
 
     # ---------------------------------------------------------- run log
     (out / "run_log.md").write_text(
@@ -52,7 +62,7 @@ def main():
          f"| FM baseline | 0.6674 | 0.5357 | {BASELINE_VALID:.4f} | - |"]
     if best and best.metrics:
         m = best.metrics
-        L.append(f"| **agent best (node #{best.id})** | {m['GAUC']:.4f} | "
+        L.append(f"| **agent, submitted (node #{best.id})** | {m['GAUC']:.4f} | "
                  f"{m['nDCG@5']:.4f} | **{best.score:.4f}** | "
                  f"{best.score - BASELINE_VALID:+.4f} |")
         if best.n_seeds > 1:
@@ -110,7 +120,7 @@ def main():
          f"| Stop reason | {(end or {}).get('stop_reason', 'run not finalised')} |", "",
          "## Autonomy", "",
          "| | |", "|---|---|",
-         f"| Manual interventions | {(end or {}).get('interventions', 0)} |",
+         f"| Manual interventions | {a.interventions if a.interventions is not None else (end or {}).get('interventions', 0)} |",
          f"| Failures recovered from, unaided | {recoveries} |",
          f"| Candidates rejected by the leak guard | {guard_rejects} |", "",
          "Restarting a crashed process is not counted as an intervention "

@@ -1,0 +1,81 @@
+--- SPLIT STATISTICS ---
+Train rows: 1141112
+Valid rows: 124909
+Train unique users: 26210, unique videos: 7538
+Valid unique users: 22377, unique videos: 5951
+User overlap (valid users in train): 21955 / 22377 (98.11%)
+Video overlap (valid videos in train): 5944 / 5951 (99.88%)
+Train long_view rate: 0.3366
+Valid long_view rate: 0.3133
+
+--- USER-LEVEL STATISTICS IN VALID ---
+Total users: 22377
+All-zero users: 6785 (30.32%)
+All-one users: 2663 (11.90%)
+Mixed users (contribute to GAUC): 12929 (57.78%)
+Impression count per user: min=1, median=4.0, max=74, mean=5.58
+
+--- LONG_VIEW DEFINITION ANALYSIS ---
+Accuracy of play_time/duration >= 0.8: 86.44%
+Accuracy of play_time >= 3000ms: 75.06%
+Accuracy of (play_time >= 3000ms OR play_time/duration >= 0.8): 75.06%
+Number of mismatches with standard rule (play_time >= 3s or ratio >= 0.8): 24943 out of 100000
+Sample mismatches (play_time, duration, ratio, long_view):
+  play_time=4131.0, duration=148916.0, ratio=0.028, long_view=0
+  play_time=3967.0, duration=90440.0, ratio=0.044, long_view=0
+  play_time=6287.0, duration=8733.0, ratio=0.720, long_view=0
+  play_time=11889.0, duration=161866.0, ratio=0.073, long_view=0
+  play_time=11407.0, duration=18283.0, ratio=0.624, long_view=0
+  play_time=10411.0, duration=69233.0, ratio=0.150, long_view=0
+  play_time=9409.0, duration=41566.0, ratio=0.226, long_view=0
+  play_time=15980.0, duration=46766.0, ratio=0.342, long_view=0
+  play_time=15589.0, duration=21966.0, ratio=0.710, long_view=0
+  play_time=9794.0, duration=69033.0, ratio=0.142, long_view=0
+
+--- CORRELATION WITH OTHER TARGETS ---
+Total train rows: 1141112
+  is_click         | rate: 0.4634 | P(long_view=1 | is_click=1): 0.7233
+  is_like          | rate: 0.0187 | P(long_view=1 | is_like=1): 0.6763
+  is_follow        | rate: 0.0010 | P(long_view=1 | is_follow=1): 0.7084
+  is_comment       | rate: 0.0026 | P(long_view=1 | is_comment=1): 0.8857
+  is_forward       | rate: 0.0010 | P(long_view=1 | is_forward=1): 0.6743
+  is_hate          | rate: 0.0004 | P(long_view=1 | is_hate=1): 0.2458
+  is_profile_enter | rate: 0.0254 | P(long_view=1 | is_profile_enter=1): 0.7644
+
+--- FEATURE CHARACTERISTICS ---
+Video basic features count: 7583
+Columns: ['video_id', 'author_id', 'video_type', 'upload_dt', 'upload_type', 'visible_status', 'video_duration', 'server_width', 'server_height', 'music_id', 'music_type', 'tag']
+  author_id            | unique values: 6510
+  video_type           | unique values: 3
+  upload_dt            | unique values: 3
+  upload_type          | unique values: 14
+  visible_status       | unique values: 1
+  video_duration       | unique values: 5757
+  server_width         | unique values: 156
+  server_height        | unique values: 120
+  music_id             | unique values: 7202
+  music_type           | unique values: 6
+  tag                  | unique values: 111
+User features count: 27285
+Columns (first 15): ['user_id', 'user_active_degree', 'is_lowactive_period', 'is_live_streamer', 'is_video_author', 'follow_user_num', 'follow_user_num_range', 'fans_user_num', 'fans_user_num_range', 'friend_user_num', 'friend_user_num_range', 'register_days', 'register_days_range', 'onehot_feat0', 'onehot_feat1']
+  user_active_degree        | unique values: 9
+  is_lowactive_period       | unique values: 1
+  is_live_streamer          | unique values: 2
+  is_video_author           | unique values: 2
+  follow_user_num           | unique values: 2562
+  follow_user_num_range     | unique values: 8
+  fans_user_num             | unique values: 2210
+  fans_user_num_range       | unique values: 9
+  friend_user_num           | unique values: 1391
+  friend_user_num_range     | unique values: 7
+  register_days             | unique values: 2813
+  register_days_range       | unique values: 8
+  onehot_feat0              | unique values: 2
+  onehot_feat1              | unique values: 7
+Video statistic features count: 7583
+Columns (first 10): ['video_id', 'counts', 'show_cnt', 'show_user_num', 'play_cnt', 'play_user_num', 'play_duration', 'complete_play_cnt', 'complete_play_user_num', 'valid_play_cnt']
+Total statistic columns: 52
+
+--- USER HISTORY ANALYSIS ---
+Valid impressions with ANY user history in train: 122919 / 124909 (98.41%)
+User history length in train for valid impressions: min=0, median=51.0, max=809, mean=67.33

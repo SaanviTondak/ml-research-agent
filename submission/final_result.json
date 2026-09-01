@@ -1,0 +1,32 @@
+{
+  "ran_at": "2026-09-01T11:05:19",
+  "candidate": "candidates/agent_best.py (agent node #4)",
+  "candidate_sha256": "80d5ff32a11c6ec337039245d8285ba2413eefdcfc44d765724223387dbd253f",
+  "evaluate_sha256": "ecfde28392eb14fec4f488083251df50624e1af2b86278b962daecfb42d195de",
+  "data_dir": "/Users/saanvitondak/Desktop/pingu /kuairand-starter-kit/KuaiRand-Pure/data",
+  "seeds": [
+    0
+  ],
+  "seeds_note": "3 seeds were requested; seed 0 took 25 min on the full dataset and the remaining two were abandoned for the submission deadline. Validation selection was still 3-seed verified.",
+  "runs": [
+    {
+      "seed": 0,
+      "scores_csv": "scores_test_seed0.csv",
+      "GAUC": 0.6650396536998502,
+      "nDCG@5": 0.5315505043374961,
+      "primary": 0.5982950790186732,
+      "users": 23875,
+      "rows": 170588,
+      "split": "test"
+    }
+  ],
+  "summary": {
+    "mean_test_primary": 0.5982950790186732,
+    "std_test_primary": null,
+    "baseline_test_primary": 0.5946,
+    "delta_vs_baseline": 0.003695079018673164,
+    "oracle_test_primary": 0.8645,
+    "fraction_of_remaining_headroom": 0.01369054842042669,
+    "beat_baseline": true
+  }
+}
