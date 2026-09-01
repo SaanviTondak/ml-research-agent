@@ -1,0 +1,27 @@
+Built with — tags (max 25):
+
+python
+numpy
+google-gemini
+gemini-api
+llm
+autonomous-agents
+agentic-ai
+machine-learning
+recommender-systems
+learning-to-rank
+information-retrieval
+factorization-machines
+bpr
+listwise-ranking
+softmax-cross-entropy
+gauc
+ndcg
+kuairand
+tiktok-techjam
+subprocess
+json-lines
+git
+macos
+cli
+urllib
