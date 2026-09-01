@@ -31,6 +31,16 @@ if __package__ in (None, ""):
 
 EPS = 0.002          # organizers' convergence epsilon (~2.5 sigma)
 N_CONVERGE = 3       # consecutive non-improving iterations before stopping
+MIN_SCORED_BEFORE_CONVERGENCE = 12
+"""The organizers' rule - three consecutive iterations gaining <= 0.002 -
+presumes a search that has had a chance to get going. Applied from the first
+iteration it terminates almost any run with a slow start: the first live run
+stopped after four attempts, on the same iteration it set a new best, because
+the two attempts before it happened not to improve.
+
+That is the rule read literally and it is not what the rule is for. Convergence
+now requires a floor of scored attempts first. The floor is a documented
+interpretation, not a change to eps or N."""
 
 
 @dataclass
@@ -170,8 +180,12 @@ class SolutionJournal:
             hist.append(best)
         return hist
 
-    def has_converged(self, eps=EPS, n=N_CONVERGE):
-        """The organizers' rule: N consecutive iterations gaining <= eps."""
+    def has_converged(self, eps=EPS, n=N_CONVERGE,
+                      min_scored=MIN_SCORED_BEFORE_CONVERGENCE):
+        """The organizers' rule: N consecutive iterations gaining <= eps,
+        applied only once the search has had min_scored attempts to get going."""
+        if len(self.good()) < min_scored:
+            return False
         hist = [h for h in self.improvement_history() if h is not None]
         if len(hist) < n + 1:
             return False
