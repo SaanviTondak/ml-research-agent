@@ -42,7 +42,9 @@ DEFAULT_MODEL = "gemini-3.6-flash"
 # Tried in order when the primary is saturated (503). Model
 # availability moves faster than the code; `python3 check_llm.py
 # --list` re-derives this from the API.
-FALLBACK_MODELS = ("gemini-3.5-flash", "gemini-3-flash-preview")
+FALLBACK_MODELS = ("gemini-3.5-flash", "gemini-3-flash-preview",
+                   "gemini-3.5-flash-lite", "gemini-3.1-flash-lite",
+                   "gemini-flash-latest", "gemini-flash-lite-latest")
 GEMINI_ENDPOINT = ("https://generativelanguage.googleapis.com/v1beta/"
                    "models/{model}:generateContent")
 
@@ -264,8 +266,24 @@ class LLM:
         while True:
             try:
                 return self._complete_one_model(system, user, **kw)
-            except QuotaExhausted:
-                raise                      # waiting will not help; park instead
+            except QuotaExhausted as e:
+                # Free-tier quota is metered PER MODEL, so an exhausted daily
+                # allowance on one model says nothing about the next. The first
+                # version parked the run here; it cost a live run after nine
+                # minutes while six other models still had quota. Fall over
+                # like any other failure, and park only when every model is
+                # spent - which is the only state waiting could fix.
+                tried.append(self.model)
+                if not self.fallbacks:
+                    raise QuotaExhausted(
+                        f"quota exhausted on every model "
+                        f"({', '.join(tried)}): {e}") from e
+                nxt = self.fallbacks.pop(0)
+                self._log("llm_model_switch", status="error",
+                          note=f"{self.model} out of quota, switching to {nxt}",
+                          error=str(e)[:300])
+                self.backend.model = nxt
+                continue
             except LLMError as e:
                 tried.append(self.model)
                 if not self.fallbacks:
