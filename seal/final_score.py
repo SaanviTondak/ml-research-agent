@@ -91,6 +91,21 @@ def main():
         audit["runs"].append({"seed": seed, "wall_s": round(r.wall_s, 1),
                               "scores_csv": out.name, **s.to_dict()})
 
+    # The deliverable file. Seed 0 by convention - stated in the audit trail
+    # so the choice cannot be mistaken for picking the best-scoring seed.
+    submission = SEAL_DIR / "submission.csv"
+    src = SEAL_DIR / f"scores_test_seed{a.seeds[0]}.csv"
+    submission.write_text(src.read_text())
+    audit["submission"] = {"file": submission.name, "from_seed": a.seeds[0],
+                           "note": "first seed, chosen before scoring"}
+
+    # Validate with the organizer's own checker, not ours.
+    sys.path.insert(0, str(REPO / "kuairand-starter-kit"))
+    from data import load as _load
+    from submit import read_submission
+    read_submission(submission, _load(str(REAL_DATA))["test"])
+    print(f"\nsubmission.csv validated by the organizer's submit.py checker")
+
     mean = statistics.fmean(primaries)
     std = statistics.stdev(primaries) if len(primaries) > 1 else None
     delta = mean - BASELINE_TEST_PRIMARY
