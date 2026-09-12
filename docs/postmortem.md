@@ -154,6 +154,15 @@ test_a_successful_repair_clears_the_debug_state PASSED
 
 ### Not done
 
+**Charge the time cap in monotonic time.** `elapsed_h` and `ExecResult.wall_s`
+both read `time.time()`, so a host that sleeps mid-run bills the suspended
+interval against the 6 h cap and against individual candidates. Run `final_02`
+reported a candidate at 7141s against a 600s timeout that correctly never fired,
+because `communicate(timeout=...)` measures in `time.monotonic()` — which does
+not advance during sleep on macOS. The cap should use the same clock as the
+timeout, and the journal should carry awake-time alongside wall-clock. See
+`interventions.md` § Environment events.
+
 **Never let a repair regress below the incumbent.** A debug attempt scoring
 worse than the best node is still recorded as a normal result. It cannot
 corrupt selection — `best()` takes the max — so this is budget hygiene rather

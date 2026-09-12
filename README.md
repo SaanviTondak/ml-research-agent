@@ -33,46 +33,13 @@ rather than trimmed.
 
 ## The run
 
-Every attempt the agent made, from its own state file
-(`python3 tools/render_progress.py`):
+Every attempt the agent made, rendered from its own state file
+(`python3 tools/render_charts.py`):
 
-```
-                                                          |  FM baseline 0.6016
-   0  draft    ███████████████████████████████████████████     0.5986
-   1  improve  ████████████████                          :     0.5135
-   2  improve  ██████████████████████████████████████████:     0.5984
-   3  improve  ███████████████████████████████████████████     0.5996
-   4  improve  ████████████████████████████████████████████    0.6042  <-- new best
-   5  improve  ████████████████████████████████████████  :     0.5908
-   6  improve  ████████████████████████████████████████████    0.6038
-   7  improve  ████████████████████████████████████████████    0.6046  <-- new best
-   8  improve  ██                                        :     0.4665
-   9  draft                                              :     failed
-  10  improve                                            :     failed
-  11  debug                                              :     failed
-  12  debug                                              :     failed
-  13  debug                                              :     failed
-  14  debug                                              :     failed
-  15  debug    ██████                                    :     0.4791
-  16  debug                                              :     failed
-  17  debug                                              :     failed
-  18  debug                                              :     failed
-  19  debug                                              :     failed
-  20  debug                                              :     failed
-  21  debug    ██████████████████████████████████████████:     0.5961
-  22  debug                                              :     failed
-  23  debug                                              :     failed
-  24  debug                                              :     failed
-  25  debug                                              :     failed
-  26  debug                                              :     failed
-  27  debug                                              :     failed
-  28  debug                                              :     failed
-  29  debug                                              :     failed
-  30  debug                                              :     failed
-  31  debug                                              :     failed
-  32  debug                                              :     failed
-  33  debug    ███████                                   :     0.4832
-```
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/img/final_01-attempts-dark.svg">
+  <img alt="Validation score per attempt for run final_01. Twelve of thirty-four attempts scored; the rest are marked as failures along the floor. The stage band shows the last twenty-three iterations were all debug." src="docs/img/final_01-attempts-light.svg">
+</picture>
 
 | | |
 |---|---|
@@ -99,6 +66,11 @@ it had **no limit on debug depth and no path back to a healthy node.** Once
 node 10 failed, nodes 11–33 all took `parent = 10`: twenty-three consecutive
 repairs of the same broken script, while nodes 4 and 7 sat scored and
 unextended the entire time.
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/img/final_01-tree-dark.svg">
+  <img alt="Solution tree for run final_01. Node 10 carries twenty-three debug children fanning out, while nodes 4 and 7 remain unextended." src="docs/img/final_01-tree-light.svg">
+</picture>
 
 68% of the iteration budget went into that trap. The agent's own diagnosis
 ("the previous script was cut off at the output token limit") was right 5 times
@@ -141,6 +113,37 @@ silently invalidates every number the project reports, and nothing about the run
 would look wrong.
 
 So the constraint is structural, not procedural.
+
+```mermaid
+flowchart LR
+    subgraph sealed["sealed - off limits during the run"]
+        REAL[("KuaiRand-Pure<br/>full dataset<br/>includes test labels")]
+    end
+
+    FW["agent/firewall.py<br/>drop every row dated &gt; 20220428"]
+    VIS[("work/data_visible/<br/>train 1,141,112<br/>valid 124,909<br/><b>test 0 rows</b>")]
+    VER["agent/verify_firewall.py<br/>independent re-read<br/>runs before any candidate"]
+
+    subgraph loop["the agent - 50 iterations, no human"]
+        AGENT["loop.py writes<br/>candidate scripts"]
+        EXEC["executor.py<br/>subprocess, timeout"]
+        SCORE["scorer.py<br/>refuses split=test"]
+    end
+
+    SEAL["seal/final_score.py<br/>ONCE, after convergence"]
+
+    REAL -->|"build step"| FW --> VIS
+    VIS --> VER
+    VER -->|"halt run on breach"| AGENT
+    VIS --> AGENT --> EXEC --> SCORE
+    SCORE -->|"valid only"| AGENT
+    REAL -.->|"the only path to test,<br/>and nothing in agent/ can reach it"| SEAL
+
+    style REAL fill:#d03b3b,stroke:#d03b3b,color:#fff
+    style VIS fill:#1baf7a,stroke:#1baf7a,color:#fff
+    style SEAL fill:#eda100,stroke:#eda100,color:#000
+```
+
 [`agent/firewall.py`](agent/firewall.py) materialises `work/data_visible/`, a
 data directory that **physically contains no impression dated after 20220428**,
 the last day of the validation window:

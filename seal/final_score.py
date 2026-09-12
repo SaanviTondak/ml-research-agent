@@ -11,6 +11,7 @@ without --force, and writes an audit trail next to the scores.
 
     python3 seal/final_score.py --candidate candidates/fm_baseline.py
     python3 seal/final_score.py --candidate ... --seeds 0 1 2 3 4
+    python3 seal/final_score.py --candidate ... --label final_02
 
 Reporting more than one seed is strongly recommended: the baseline's own
 seed-to-seed std on test primary is 0.0008, so a single-seed delta under
@@ -35,6 +36,22 @@ ORACLE_TEST_PRIMARY = 0.8645        # judge progress against this, not 1.0
 SEAL_DIR = WORK / "sealed_result"
 
 
+def seal_dir(label=None):
+    """Where one sealed result lives. --label gives a run its own directory.
+
+    A second agent run needs somewhere to record its test score without
+    destroying the first one's audit trail. Each label still gets exactly one
+    result and still refuses to overwrite it.
+
+    This does weaken the "scored once" property in one direction, and it is
+    worth naming: someone could score many labels and report only the best.
+    Nothing in the code can prevent that - the control is that every label's
+    directory is committed and every result is reported, so a missing label is
+    visible. Do not add a label to get a second attempt at the same candidate.
+    """
+    return SEAL_DIR if not label else WORK / f"sealed_result_{label}"
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--candidate", required=True,
@@ -43,12 +60,17 @@ def main():
     ap.add_argument("--timeout_s", type=int, default=3600)
     ap.add_argument("--force", action="store_true",
                     help="overwrite an existing sealed result")
+    ap.add_argument("--label", default=None,
+                    help="score into work/sealed_result_<label>/ instead of "
+                         "work/sealed_result/, so a second run does not "
+                         "overwrite the first run's audit trail")
     a = ap.parse_args()
 
     cand = Path(a.candidate).resolve()
     if not cand.exists():
         raise SystemExit(f"candidate not found: {cand}")
 
+    SEAL_DIR = seal_dir(a.label)
     SEAL_DIR.mkdir(parents=True, exist_ok=True)
     result_path = SEAL_DIR / "final_result.json"
     if result_path.exists() and not a.force:

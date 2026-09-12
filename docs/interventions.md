@@ -64,3 +64,58 @@ behaviour after seeing it stop badly.
 Work done **before** the autonomous run starts — Phases 0–2, building the
 harness, seeding context — is construction, not intervention. The count begins
 when the loop is first started and ends when it converges or hits its cap.
+
+---
+
+# Run `final_02` (post-hackathon)
+
+A second autonomous run, started 2026-09-12 after the search-policy fixes in
+[`postmortem.md`](postmortem.md). The hackathon submission is frozen at tag
+`hackathon-submission` and is unaffected by anything below.
+
+**Interventions during the autonomous run: 0.**
+
+## Environment events (not interventions)
+
+| # | time | what happened | counted |
+|---|---|---|---|
+| E1 | 2026-09-12 ~15:50-16:24 | The host Mac entered idle sleep repeatedly while the run was in progress. `caffeinate -i -m -w <loop pid>` was started at 16:25 to prevent further sleep for the remainder of the run. | **No** |
+
+Not counted because nothing in the agent was touched: not its code, not its
+prompts, not its candidates, not its stopping rule. The change is to the host's
+power management, in the same category as "do not close the laptop lid". The
+agent's search behaviour is identical either way.
+
+It is recorded anyway, because it **contaminates one reported number** and a
+reader is entitled to know which.
+
+### What sleep did to the measurements
+
+`agent/executor.py` enforces its per-candidate timeout with
+`subprocess.communicate(timeout=...)`, which measures in `time.monotonic()`.
+On macOS that clock **does not advance while the system is asleep**.
+`ExecResult.wall_s` and the loop's own `elapsed_h` use `time.time()`, which
+does.
+
+So for node #8 the loop reported `7141s` against a `600s` candidate timeout
+that never fired. Both are correct: the process consumed far less than 600s of
+awake time and was rightly not killed, while ~1.8 h of suspended wall-clock was
+counted against it.
+
+The consequence worth stating plainly:
+
+* **Wall-clock figures for `final_02` are inflated** by the sleep interval, and
+  are **not comparable** to `final_01`'s. Per-candidate timings before 16:25 are
+  contaminated; timings after it are clean.
+* **The 6 h cap is charged for sleep**, because it reads `time.time()`. A run on
+  a laptop that sleeps can therefore hit its cap having done much less work than
+  the cap implies.
+* **Nothing else is affected.** Attempt count, scoring rate, stage mix,
+  iterations-per-branch, validation scores and the sealed test score are all
+  independent of how long the host was suspended. The search-efficiency
+  comparison — which is the point of `final_02` — stands unaltered.
+
+A fix for the loop (charge the cap in monotonic time, and report awake-time
+alongside wall-clock) is noted in `postmortem.md` under "Not done"; it was not
+applied mid-run, because editing the agent while it is running is exactly the
+thing the intervention count exists to discourage.
