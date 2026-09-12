@@ -1,0 +1,142 @@
+--- node_000.py
++++ node_002.py
+@@ -19,6 +19,6 @@
+ 
+ 
+-class PairwiseFM:
+-    def __init__(self, num_features, k=16, lr=0.003, weight_decay=1e-5, seed=0):
++class InfoNCE_FM:
++    def __init__(self, num_features, k=16, lr=0.003, weight_decay=1e-4, tau=0.2, seed=0):
+         rng = np.random.default_rng(seed)
+         self.num_features = num_features
+@@ -26,4 +26,5 @@
+         self.lr = lr
+         self.wd = weight_decay
++        self.tau = tau
+ 
+         self.V = rng.normal(0.0, 0.01, size=(num_features, k)).astype(np.float32)
+@@ -36,6 +37,4 @@
+         self.mW = np.zeros_like(self.W)
+         self.vW = np.zeros_like(self.W)
+-        self.mb = np.float32(0.0)
+-        self.vb = np.float32(0.0)
+         self.t = 0
+ 
+@@ -56,21 +55,28 @@
+         return lin + inter, V_X, sum_V
+ 
+-    def step_pairwise(self, X_pos, X_neg):
++    def step_infonce(self, X_pos, X_neg):
+         B = len(X_pos)
++        K = X_neg.shape[1]
++        X_neg_flat = X_neg.reshape(-1, X_pos.shape[1])
++
+         s_pos, V_pos, sum_V_pos = self._forward(X_pos)
+-        s_neg, V_neg, sum_V_neg = self._forward(X_neg)
+-
+-        diff = s_pos - s_neg
+-        # BPR Loss gradient wrt diff: -1 / (1 + exp(diff))
+-        # Sigmoid(-diff) = 1 / (1 + exp(diff))
+-        sig_neg_diff = 1.0 / (1.0 + np.exp(np.clip(diff, -30.0, 30.0)))
+-        loss = np.mean(np.log(1.0 + np.exp(np.clip(-diff, -30.0, 30.0))))
+-
+-        dL_spos = -sig_neg_diff / B
+-        dL_sneg = sig_neg_diff / B
++        s_neg, V_neg, sum_V_neg = self._forward(X_neg_flat)
++
++        logits = np.column_stack([s_pos, s_neg.reshape(B, K)]) / self.tau
++        max_logits = np.max(logits, axis=1, keepdims=True)
++        exp_logits = np.exp(logits - max_logits)
++        probs = exp_logits / np.sum(exp_logits, axis=1, keepdims=True)
++
++        loss = -np.mean(np.log(probs[:, 0] + 1e-12))
++
++        dZ = probs.copy()
++        dZ[:, 0] -= 1.0
++        dZ = dZ / (B * self.tau)
++
++        dL_spos = dZ[:, 0]
++        dL_sneg = dZ[:, 1:].ravel()
+ 
+         dV = np.zeros_like(self.V)
+         dW = np.zeros_like(self.W)
+-        db = np.float32(np.sum(dL_spos) + np.sum(dL_sneg))
+ 
+         # Backward for pos
+@@ -80,7 +86,7 @@
+ 
+         # Backward for neg
+-        np.add.at(dW, X_neg.ravel(), np.repeat(dL_sneg, X_neg.shape[1]))
++        np.add.at(dW, X_neg_flat.ravel(), np.repeat(dL_sneg, X_neg_flat.shape[1]))
+         grad_V_neg = dL_sneg[:, None, None] * (sum_V_neg[:, None, :] - V_neg)
+-        np.add.at(dV, X_neg.ravel(), grad_V_neg.reshape(-1, self.k))
++        np.add.at(dV, X_neg_flat.ravel(), grad_V_neg.reshape(-1, self.k))
+ 
+         # Adam update
+@@ -89,5 +95,4 @@
+         lr_t = self.lr * np.sqrt(1.0 - beta2 ** self.t) / (1.0 - beta1 ** self.t)
+ 
+-        # Apply weight decay
+         if self.wd > 0:
+             dV += self.wd * self.V
+@@ -102,12 +107,8 @@
+         self.W -= lr_t * self.mW / (np.sqrt(self.vW) + eps)
+ 
+-        self.mb = beta1 * self.mb + (1.0 - beta1) * db
+-        self.vb = beta2 * self.vb + (1.0 - beta2) * (db ** 2)
+-        self.b -= lr_t * self.mb / (np.sqrt(self.vb) + eps)
+-
+         return float(loss)
+ 
+ 
+-def prepare_pair_sampler(ytr, users, rng):
++def prepare_multi_neg_sampler(ytr, users, rng, K=7):
+     user_neg = defaultdict(list)
+     for idx, (y, u) in enumerate(zip(ytr, users)):
+@@ -129,7 +130,7 @@
+     def sample():
+         n_pos = len(all_pos)
+-        sampled_neg = np.empty(n_pos, dtype=np.int32)
++        sampled_neg = np.empty((n_pos, K), dtype=np.int32)
+         for i, pool in enumerate(pos_to_neg_pools):
+-            sampled_neg[i] = pool[rng.integers(0, len(pool))]
++            sampled_neg[i] = rng.choice(pool, size=K, replace=True)
+         perm = rng.permutation(n_pos)
+         return all_pos[perm], sampled_neg[perm]
+@@ -145,8 +146,10 @@
+     ap.add_argument("--seed", type=int, default=0)
+     ap.add_argument("--k", type=int, default=16)
+-    ap.add_argument("--lr", type=float, default=0.005)
+-    ap.add_argument("--wd", type=float, default=1e-5)
++    ap.add_argument("--num_neg", type=int, default=7)
++    ap.add_argument("--tau", type=float, default=0.20)
++    ap.add_argument("--lr", type=float, default=0.003)
++    ap.add_argument("--wd", type=float, default=1e-4)
+     ap.add_argument("--epochs", type=int, default=30)
+-    ap.add_argument("--bs", type=int, default=4096)
++    ap.add_argument("--bs", type=int, default=2048)
+     ap.add_argument("--patience", type=int, default=6)
+     a = ap.parse_args()
+@@ -163,7 +166,7 @@
+ 
+     rng = np.random.default_rng(a.seed)
+-    sampler = prepare_pair_sampler(ytr, utr, rng)
+-
+-    m = PairwiseFM(dim, k=a.k, lr=a.lr, weight_decay=a.wd, seed=a.seed)
++    sampler = prepare_multi_neg_sampler(ytr, utr, rng, K=a.num_neg)
++
++    m = InfoNCE_FM(dim, k=a.k, lr=a.lr, weight_decay=a.wd, tau=a.tau, seed=a.seed)
+     best, best_state, bad = -1.0, None, 0
+ 
+@@ -175,9 +178,9 @@
+             b_pos = pos_idxs[i:i + a.bs]
+             b_neg = neg_idxs[i:i + a.bs]
+-            loss = m.step_pairwise(Xtr[b_pos], Xtr[b_neg])
++            loss = m.step_infonce(Xtr[b_pos], Xtr[b_neg])
+             losses.append(loss)
+ 
+         va = evaluate(uva, yva, m.predict(Xva))
+-        print(f"  epoch {ep:2d} | BPR loss {np.mean(losses):.4f} "
++        print(f"  epoch {ep:2d} | InfoNCE loss {np.mean(losses):.4f} "
+               f"| valid GAUC {va['GAUC']:.4f} nDCG@5 {va['nDCG@5']:.4f} "
+               f"primary {va['primary']:.4f} | {time.time()-te:.1f}s")

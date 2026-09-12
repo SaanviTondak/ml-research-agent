@@ -3,14 +3,14 @@
 Checks the key loads, the endpoint is reachable, the model answers, usage
 accounting is populated, and code extraction works on a real response.
 
-    python3 check_llm.py [--model MODEL]
-    python3 check_llm.py --list        # what this key can actually reach
+    python3 tools/check_llm.py [--model MODEL]
+    python3 tools/check_llm.py --list   # what this key can actually reach
 """
 import argparse
 import sys
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parent))
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from agent.llm import (LLM, GeminiBackend, TokenLedger, LLMError,
                        QuotaExhausted, extract_code, load_api_key,

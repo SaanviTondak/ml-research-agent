@@ -1,0 +1,149 @@
+--- node_004.py
++++ node_006.py
+@@ -13,5 +13,11 @@
+           'valid': (20220422, 20220428),
+           'test':  (20220429, 20220508)}
+-FIELDS = ['user_id', 'video_id', 'author_id', 'tab', 'dur_bucket', 'tag', 'video_type', 'upload_type', 'music_type']
++
++FIELDS = [
++    'user_id', 'video_id', 'author_id', 'tab', 'dur_bucket', 
++    'tag', 'video_type', 'upload_type', 'music_type',
++    'show_cnt_bucket', 'play_rate_bucket', 'complete_rate_bucket', 'like_rate_bucket',
++    'user_active_degree', 'follow_user_num_range', 'register_days_range'
++]
+ 
+ 
+@@ -22,13 +28,48 @@
+ def load_custom(data_dir):
+     vid_features = {}
+-    with open(os.path.join(data_dir, 'video_features_basic_pure.csv')) as fh:
+-        for r in csv.DictReader(fh):
+-            vid_features[r['video_id']] = {
+-                'author_id': r['author_id'],
+-                'tag': r['tag'],
+-                'video_type': r['video_type'],
+-                'upload_type': r['upload_type'],
+-                'music_type': r['music_type']
+-            }
++    basic_path = os.path.join(data_dir, 'video_features_basic_pure.csv')
++    if os.path.exists(basic_path):
++        with open(basic_path) as fh:
++            for r in csv.DictReader(fh):
++                vid_features[r['video_id']] = {
++                    'author_id': r.get('author_id', 'UNK'),
++                    'tag': r.get('tag', 'UNK'),
++                    'video_type': r.get('video_type', 'UNK'),
++                    'upload_type': r.get('upload_type', 'UNK'),
++                    'music_type': r.get('music_type', 'UNK')
++                }
++
++    vid_stats = {}
++    stats_path = os.path.join(data_dir, 'video_features_statistic_pure.csv')
++    if os.path.exists(stats_path):
++        with open(stats_path) as fh:
++            for r in csv.DictReader(fh):
++                vid = r['video_id']
++                show_cnt = float(r.get('show_cnt', 0.0) or 0.0)
++                play_cnt = float(r.get('play_cnt', 0.0) or 0.0)
++                complete_cnt = float(r.get('complete_play_cnt', 0.0) or 0.0)
++                like_cnt = float(r.get('like_cnt', 0.0) or 0.0)
++                
++                play_rate = play_cnt / (show_cnt + 1.0)
++                complete_rate = complete_cnt / (play_cnt + 1.0)
++                like_rate = like_cnt / (play_cnt + 1.0)
++                
++                vid_stats[vid] = {
++                    'show_cnt': show_cnt,
++                    'play_rate': play_rate,
++                    'complete_rate': complete_rate,
++                    'like_rate': like_rate
++                }
++
++    user_features = {}
++    user_features_path = os.path.join(data_dir, 'user_features_pure.csv')
++    if os.path.exists(user_features_path):
++        with open(user_features_path) as fh:
++            for r in csv.DictReader(fh):
++                user_features[r['user_id']] = {
++                    'user_active_degree': r.get('user_active_degree', 'UNK'),
++                    'follow_user_num_range': r.get('follow_user_num_range', 'UNK'),
++                    'register_days_range': r.get('register_days_range', 'UNK')
++                }
+ 
+     rows = []
+@@ -44,4 +85,15 @@
+                     'music_type': 'UNK'
+                 })
++                stats = vid_stats.get(vid, {
++                    'show_cnt': 0.0,
++                    'play_rate': 0.0,
++                    'complete_rate': 0.0,
++                    'like_rate': 0.0
++                })
++                u_feat = user_features.get(r['user_id'], {
++                    'user_active_degree': 'UNK',
++                    'follow_user_num_range': 'UNK',
++                    'register_days_range': 'UNK'
++                })
+                 rows.append((
+                     int(r['date']), 
+@@ -55,5 +107,12 @@
+                     feat['video_type'],
+                     feat['upload_type'],
+-                    feat['music_type']
++                    feat['music_type'],
++                    stats['show_cnt'],
++                    stats['play_rate'],
++                    stats['complete_rate'],
++                    stats['like_rate'],
++                    u_feat['user_active_degree'],
++                    u_feat['follow_user_num_range'],
++                    u_feat['register_days_range']
+                 ))
+ 
+@@ -66,5 +125,9 @@
+ def encode_custom(splits):
+     tr = splits['train']
+-    edges = _bucket_edges([x[5] for x in tr])
++    dur_edges = _bucket_edges([x[5] for x in tr])
++    show_edges = _bucket_edges([x[11] for x in tr])
++    play_edges = _bucket_edges([x[12] for x in tr])
++    complete_edges = _bucket_edges([x[13] for x in tr])
++    like_edges = _bucket_edges([x[14] for x in tr])
+ 
+     def raw(x):
+@@ -74,9 +137,16 @@
+             x[3], 
+             x[4], 
+-            str(int(np.searchsorted(edges, x[5]))), 
++            str(int(np.searchsorted(dur_edges, x[5]))), 
+             x[7], 
+             x[8], 
+             x[9], 
+-            x[10]
++            x[10],
++            str(int(np.searchsorted(show_edges, x[11]))),
++            str(int(np.searchsorted(play_edges, x[12]))),
++            str(int(np.searchsorted(complete_edges, x[13]))),
++            str(int(np.searchsorted(like_edges, x[14]))),
++            x[15],
++            x[16],
++            x[17]
+         ]
+ 
+@@ -113,5 +183,5 @@
+ 
+ class ListwiseFM:
+-    def __init__(self, num_features, k=16, lr=0.0015, weight_decay=1e-4, seed=0):
++    def __init__(self, num_features, k=16, lr=0.0012, weight_decay=3e-4, seed=0):
+         rng = np.random.default_rng(seed)
+         self.num_features = num_features
+@@ -249,6 +319,6 @@
+     ap.add_argument("--seed", type=int, default=0)
+     ap.add_argument("--k", type=int, default=16)
+-    ap.add_argument("--lr", type=float, default=0.0015)
+-    ap.add_argument("--wd", type=float, default=1e-4)
++    ap.add_argument("--lr", type=float, default=0.0012)
++    ap.add_argument("--wd", type=float, default=3e-4)
+     ap.add_argument("--epochs", type=int, default=30)
+     ap.add_argument("--bs", type=int, default=4096)

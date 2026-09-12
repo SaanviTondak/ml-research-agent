@@ -5,12 +5,13 @@ Nothing is typed in by hand, so the writeup cannot drift from the evidence.
 """
 import json, re, sys
 from pathlib import Path
-sys.path.insert(0, str(Path(__file__).resolve().parent))
+ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(ROOT))
 from agent.state import SolutionJournal
 from agent.journal import Journal
 from agent.paths import WORK
 
-RUN = Path("work/runs/final_01")
+RUN = ROOT / "work" / "runs" / "final_01"
 st = SolutionJournal(RUN / "state.json")
 records = Journal(RUN / "journal.jsonl").read()
 end = [r for r in records if r["event"] == "run_end"][-1]
@@ -52,7 +53,7 @@ else:
     vals["FINAL_TEST"] = "not scored"
     vals["RESULTS_NOTE"] = "Test scoring did not complete before the deadline."
 
-p = Path("submission/devpost.md")
+p = ROOT / "submission" / "devpost.md"
 text = p.read_text()
 for k, v in vals.items():
     text = text.replace("{{" + k + "}}", v)

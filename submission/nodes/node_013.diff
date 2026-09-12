@@ -1,0 +1,146 @@
+--- node_010.py
++++ node_013.py
+@@ -1,75 +1,77 @@
+-HYPOTHESIS: Within-user ranking is significantly improved by incorporating "user favorite" features (most-interacted tag and author) and additional bucketized video statistics (like_rate, finish_rate) to capture user-video similarity and global video quality priors.
+-
+-import argparse
+-import csv
+-import os
+-import time
+-from collections import defaultdict
++import argparse, csv, os, time, collections
+ import numpy as np
+-
++from data import load
+ from evaluate import evaluate
+ 
+-HEADER = ["row_id", "user_id", "video_id", "score"]
+-LABEL = 'long_view'
+-SPLITS = {'train': (20220408, 20220421), 'valid': (20220422, 20220428), 'test': (20220429, 20220508)}
+-FIELDS = ['user_id', 'video_id', 'author_id', 'tab', 'dur_bucket', 'tag', 'video_type', 'upload_type', 
+-          'music_type', 'play_progress', 'user_active', 'follow_range', 'fav_tag', 'fav_author', 'like_rate', 'finish_rate']
++class FM:
++    def __init__(self, dim, k=16, lr=0.05, seed=0):
++        self.rng = np.random.default_rng(seed)
++        self.k, self.lr = k, lr
++        self.V = self.rng.normal(0, 0.01, (dim, k)).astype(np.float32)
++        self.W = np.zeros(dim, dtype=np.float32)
++        self.b = 0.0
+ 
+-def _bucket_edges(values, n=10):
+-    return np.quantile(np.asarray(values), np.linspace(0, 1, n + 1)[1:-1])
++    def predict(self, X, bs=16384):
++        preds = []
++        for i in range(0, len(X), bs):
++            xb = X[i:i+bs]
++            XV = self.V[xb]
++            sum_xv = np.sum(XV, axis=1)
++            sum_xv2 = np.sum(XV**2, axis=1)
++            linear = np.sum(self.W[xb], axis=1) + self.b
++            interaction = 0.5 * np.sum(sum_xv**2 - sum_xv2, axis=1)
++            preds.append(1.0 / (1.0 + np.exp(-np.clip(linear + interaction, -15, 15))))
++        return np.concatenate(preds)
+ 
+-def load_data(data_dir):
+-    vid_features = {}
+-    with open(os.path.join(data_dir, 'video_features_basic_pure.csv')) as fh:
+-        for r in csv.DictReader(fh):
+-            vid_features[r['video_id']] = {
+-                'author_id': r['author_id'], 'tag': r['tag'], 'video_type': r['video_type'],
+-                'upload_type': r['upload_type'], 'music_type': r['music_type']
+-            }
++    def step(self, X, y):
++        XV = self.V[X]
++        sum_xv = np.sum(XV, axis=1)
++        linear = np.sum(self.W[X], axis=1) + self.b
++        interaction = 0.5 * np.sum(sum_xv**2 - np.sum(XV**2, axis=1), axis=1)
++        y_hat = 1.0 / (1.0 + np.exp(-np.clip(linear + interaction, -15, 15)))
++        err = (y_hat - y).reshape(-1, 1)
++        self.b -= self.lr * np.mean(err)
++        lr_n = self.lr / X.shape[0]
++        for i in range(X.shape[1]):
++            xi = X[:, i]
++            np.add.at(self.W, xi, -lr_n * err.ravel())
++            grad_vi = err * (sum_xv - XV[:, i])
++            np.add.at(self.V, (xi, slice(None)), -lr_n * grad_vi)
++        return -np.mean(y * np.log(y_hat + 1e-9) + (1 - y) * np.log(1 - y_hat + 1e-9))
++
++def main():
++    ap = argparse.ArgumentParser()
++    ap.add_argument("--data_dir", required=True)
++    ap.add_argument("--split", default="valid")
++    ap.add_argument("--out", required=True)
++    ap.add_argument("--seed", type=int, default=0)
++    a = ap.parse_args()
++
++    t0 = time.time()
++    splits = load(a.data_dir)
+     
+-    vid_stats = {}
+-    with open(os.path.join(data_dir, 'video_features_statistic_pure.csv')) as fh:
+-        for r in csv.DictReader(fh):
+-            s = float(r.get('show_cnt', 0) or 0)
+-            l = float(r.get('like_cnt', 0) or 0)
+-            c = float(r.get('complete_play_cnt', 0) or 0)
+-            p = float(r.get('play_progress', 0.0) or 0)
+-            vid_stats[r['video_id']] = (p, l/(s+1), c/(s+1))
++    vid2tag = {}
++    with open(os.path.join(a.data_dir, 'video_features_basic_pure.csv')) as f:
++        for r in csv.DictReader(f): vid2tag[r['video_id']] = r['tag']
++    
++    vid2like = {}
++    with open(os.path.join(a.data_dir, 'video_features_statistic_pure.csv')) as f:
++        for r in csv.DictReader(f):
++            vid2like[r['video_id']] = float(r['like_cnt']) / (float(r['show_cnt']) + 1)
+ 
+-    user_features = {}
+-    with open(os.path.join(data_dir, 'user_features_pure.csv')) as fh:
+-        for r in csv.DictReader(fh):
+-            user_features[r['user_id']] = {'user_active': r['user_active_degree'], 'follow_range': r['follow_user_num_range']}
++    user_pos_tags, user_pos_auths = collections.defaultdict(list), collections.defaultdict(list)
++    for x in splits['train']:
++        if x[6] == 1:
++            user_pos_tags[x[1]].append(vid2tag.get(x[2], 'UNK'))
++            user_pos_auths[x[1]].append(x[3])
++    
++    user_fav_t = {u: collections.Counter(ts).most_common(1)[0][0] for u, ts in user_pos_tags.items()}
++    user_fav_a = {u: collections.Counter(as_).most_common(1)[0][0] for u, as_ in user_pos_auths.items()}
++    
++    tr = splits['train']
++    dur_edges = np.quantile([x[5] for x in tr], np.linspace(0, 1, 11)[1:-1])
++    like_edges = np.quantile([vid2like.get(x[2], 0.0) for x in tr], np.linspace(0, 1, 11)[1:-1])
+ 
+-    rows = []
+-    for f in ('log_standard_4_08_to_4_21_pure.csv', 'log_standard_4_22_to_5_08_pure.csv'):
+-        with open(os.path.join(data_dir, f)) as fh:
+-            for r in csv.DictReader(fh):
+-                vid, uid = r['video_id'], r['user_id']
+-                vf = vid_features.get(vid, {k: 'UNK' for k in ['author_id', 'tag', 'video_type', 'upload_type', 'music_type']})
+-                uf = user_features.get(uid, {'user_active': 'UNK', 'follow_range': 'UNK'})
+-                vs = vid_stats.get(vid, (0.0, 0.0, 0.0))
+-                rows.append((int(r['date']), uid, vid, vf['author_id'], r['tab'], float(r['duration_ms']),
+-                             1 if r[LABEL] != '0' else 0, vf['tag'], vf['video_type'], vf['upload_type'],
+-                             vf['music_type'], vs[0], uf['user_active'], uf['follow_range'], vs[1], vs[2]))
+-    
+-    tr_rows = [x for x in rows if SPLITS['train'][0] <= x[0] <= SPLITS['train'][1]]
+-    u_tags, u_auths = defaultdict(lambda: defaultdict(int)), defaultdict(lambda: defaultdict(int))
+-    for r in tr_rows:
+-        if r[6] == 1:
+-            u_tags[r[1]][r[7]] += 1
+-            u_auths[r[1]][r[3]] += 1
+-    user_favs = {u: (max(tags, key=tags.get), max(u_auths[u], key=u_auths[u].get)) for u, tags in u_tags.items()}
+-
+-    out = {}
+-    for name, (lo, hi) in SPLITS.items():
+-        out[name] = [x for x in rows if lo <= x[0] <= hi]
+-    return out, user_favs
+-
+-def encode_data(splits, user_favs):
+-    tr = splits['train']
+-    edges = [_bucket_edges([x[i] for x in tr]) for i in [5, 11, 14, 15]]
+-
+-    def raw(x):
+-        fav = user_favs.get(x[1], ('UNK', 'UNK'))
+-        return [x+    def get_raw(x):
++        uid, vid, auth, tab, dur = x[1], x[2], x[3], x[4], x[5]
++        return [uid, vid, auth, tab, str(np.searchsorted(

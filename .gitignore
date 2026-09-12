@@ -20,3 +20,4 @@ work/
 # secrets - never commit
 .env
 *.key
+submission.zip

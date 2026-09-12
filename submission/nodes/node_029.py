@@ -1,0 +1,181 @@
+"""
+Factorization Machine with Video Statistics and User Preferences.
+Fixes truncation of previous attempt by keeping the code extremely concise.
+"""
+import argparse
+import csv
+import os
+import time
+from collections import defaultdict
+import numpy as np
+
+from evaluate import evaluate
+
+HEADER = ["row_id", "user_id", "video_id", "score"]
+LABEL = 'long_view'
+SPLITS = {'train': (20220408, 20220421), 'valid': (20220422, 20220428), 'test': (20220429, 20220508)}
+FIELDS = ['user_id', 'video_id', 'author_id', 'tab', 'dur_bucket', 'tag', 'fav_tag', 'like_bucket']
+
+class FM:
+    def __init__(self, num_features, k=16, lr=0.001, seed=0):
+        rng = np.random.default_rng(seed)
+        self.V = rng.normal(0, 0.01, (num_features, k)).astype(np.float32)
+        self.W = np.zeros(num_features, dtype=np.float32)
+        self.b = np.float32(0.0)
+        self.lr = lr
+
+    def predict(self, X):
+        linear = self.W[X].sum(axis=1) + self.b
+        v_embed = self.V[X]
+        sum_v = v_embed.sum(axis=1)
+        sum_v_sq = (v_embed ** 2).sum(axis=1)
+        inter = 0.5 * (sum_v ** 2 - sum_v_sq).sum(axis=1)
+        z = linear + inter
+        return 1.0 / (1.0 + np.exp(-np.clip(z, -15.0, 15.0)))
+
+    def step(self, X, y):
+        linear = self.W[X].sum(axis=1) + self.b
+        v_embed = self.V[X]
+        sum_v = v_embed.sum(axis=1)
+        sum_v_sq = (v_embed ** 2).sum(axis=1)
+        inter = 0.5 * (sum_v ** 2 - sum_v_sq).sum(axis=1)
+        z = linear + inter
+        p = 1.0 / (1.0 + np.exp(-np.clip(z, -15.0, 15.0)))
+        
+        grad = (p - y).astype(np.float32)
+        
+        self.b -= self.lr * grad.sum()
+        for i, idxs in enumerate(X):
+            g = grad[i]
+            self.W[idxs] -= self.lr * g
+            for f_idx in idxs:
+                self.V[f_idx] -= self.lr * g * (sum_v[i] - self.V[f_idx])
+        
+        loss = -np.mean(y * np.log(p + 1e-7) + (1 - y) * np.log(1 - p + 1e-7))
+        return loss
+
+def load_data(data_dir):
+    vid_tags = {}
+    with open(os.path.join(data_dir, 'video_features_basic_pure.csv')) as fh:
+        for r in csv.DictReader(fh):
+            vid_tags[r['video_id']] = (r['author_id'], r['tag'])
+    
+    vid_likes = {}
+    with open(os.path.join(data_dir, 'video_features_statistic_pure.csv')) as fh:
+        for r in csv.DictReader(fh):
+            s = float(r.get('show_cnt', 0) or 0)
+            l = float(r.get('like_cnt', 0) or 0)
+            vid_likes[r['video_id']] = l / (s + 1.0)
+
+    rows = []
+    for f in ('log_standard_4_08_to_4_21_pure.csv', 'log_standard_4_22_to_5_08_pure.csv'):
+        with open(os.path.join(data_dir, f)) as fh:
+            for r in csv.DictReader(fh):
+                vid, uid = r['video_id'], r['user_id']
+                author, tag = vid_tags.get(vid, ('UNK', 'UNK'))
+                like_rate = vid_likes.get(vid, 0.0)
+                rows.append((int(r['date']), uid, vid, author, r['tab'], float(r['duration_ms']),
+                             1 if r[LABEL] != '0' else 0, tag, like_rate))
+    
+    tr_rows = [x for x in rows if SPLITS['train'][0] <= x[0] <= SPLITS['train'][1]]
+    u_tags = defaultdict(lambda: defaultdict(int))
+    for r in tr_rows:
+        if r[6] == 1:
+            u_tags[r[1]][r[7]] += 1
+    user_favs = {u: max(tags, key=tags.get) if tags else 'UNK' for u, tags in u_tags.items()}
+
+    out = {}
+    for name, (lo, hi) in SPLITS.items():
+        out[name] = [x for x in rows if lo <= x[0] <= hi]
+    return out, user_favs
+
+def encode_data(splits, user_favs):
+    tr = splits['train']
+    durations = [x[5] for x in tr]
+    dur_edges = np.quantile(np.asarray(durations), np.linspace(0, 1, 11)[1:-1])
+    likes = [x[8] for x in tr]
+    like_edges = np.quantile(np.asarray(likes), np.linspace(0, 1, 11)[1:-1])
+
+    def raw(x):
+        fav = user_favs.get(x[1], 'UNK')
+        dur_b = str(int(np.searchsorted(dur_edges, x[5])))
+        like_b = str(int(np.searchsorted(like_edges, x[8])))
+        return [x[1], x[2], x[3], x[4], dur_b, x[7], fav, like_b]
+
+    vocabs = [dict() for _ in FIELDS]
+    for x in tr:
+        for i, v in enumerate(raw(x)):
+            if v not in vocabs[i]:
+                vocabs[i][v] = len(vocabs[i])
+    unk = [len(v) for v in vocabs]
+    field_dims = [len(v) + 1 for v in vocabs]
+    offsets = np.cumsum([0] + field_dims[:-1]).astype(np.int32)
+
+    enc = {}
+    for name, rws in splits.items():
+        X = np.empty((len(rws), len(FIELDS)), dtype=np.int32)
+        y = np.empty(len(rws), dtype=np.float32)
+        users = []
+        for n, x in enumerate(rws):
+            for i, v in enumerate(raw(x)):
+                X[n, i] = vocabs[i].get(v, unk[i]) + offsets[i]
+            y[n] = x[6]
+            users.append(x[1])
+        enc[name] = (X, y, users)
+    return enc, int(sum(field_dims))
+
+def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--data_dir", required=True)
+    ap.add_argument("--split", default="valid", choices=["train", "valid", "test"])
+    ap.add_argument("--out", required=True)
+    ap.add_argument("--seed", type=int, default=0)
+    ap.add_argument("--k", type=int, default=16)
+    ap.add_argument("--lr", type=float, default=0.005)
+    ap.add_argument("--epochs", type=int, default=10)
+    ap.add_argument("--bs", type=int, default=8192)
+    a = ap.parse_args()
+
+    t0 = time.time()
+    splits, user_favs = load_data(a.data_dir)
+    print(f"Loaded data in {time.time()-t0:.1f}s")
+
+    enc, dim = encode_data(splits, user_favs)
+    Xtr, ytr, _ = enc["train"]
+    Xva, yva, uva = enc["valid"]
+
+    m = FM(dim, k=a.k, lr=a.lr, seed=a.seed)
+    rng = np.random.default_rng(a.seed)
+    best, best_state, bad = -1.0, None, 0
+
+    for ep in range(1, a.epochs + 1):
+        te = time.time()
+        idx = rng.permutation(len(ytr))
+        losses = [m.step(Xtr[idx[i:i + a.bs]], ytr[idx[i:i + a.bs]])
+                  for i in range(0, len(idx), a.bs)]
+        va = evaluate(uva, yva, m.predict(Xva))
+        print(f"Epoch {ep:2d} | Loss {np.mean(losses):.4f} | Valid GAUC {va['GAUC']:.4f} nDCG@5 {va['nDCG@5']:.4f} Primary {va['primary']:.4f} | {time.time()-te:.1f}s")
+        if va["primary"] > best + 1e-5:
+            best, bad = va["primary"], 0
+            best_state = (m.V.copy(), m.W.copy(), np.float32(m.b))
+        else:
+            bad += 1
+            if bad >= 2:
+                break
+
+    if best_state is not None:
+        m.V, m.W, m.b = best_state
+
+    rows = splits[a.split]
+    X = enc[a.split][0]
+    scores = m.predict(X)
+    
+    with open(a.out, "w", newline="") as fh:
+        w = csv.writer(fh)
+        w.writerow(HEADER)
+        for i, (x, s) in enumerate(zip(rows, scores)):
+            w.writerow([i, x[1], x[2], f"{float(s):.6g}"])
+    print(f"Wrote {a.out} successfully.")
+
+if __name__ == "__main__":
+    main()

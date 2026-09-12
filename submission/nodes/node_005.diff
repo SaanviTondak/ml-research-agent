@@ -1,0 +1,240 @@
+--- node_004.py
++++ node_005.py
+@@ -44,4 +44,11 @@
+                     'music_type': 'UNK'
+                 })
++                is_click = 1 if r.get('is_click', '0') != '0' else 0
++                is_like = 1 if r.get('is_like', '0') != '0' else 0
++                is_comment = 1 if r.get('is_comment', '0') != '0' else 0
++                is_forward = 1 if r.get('is_forward', '0') != '0' else 0
++                is_follow = 1 if r.get('is_follow', '0') != '0' else 0
++                long_view = 1 if r[LABEL] != '0' else 0
++
+                 rows.append((
+                     int(r['date']), 
+@@ -51,9 +58,14 @@
+                     r['tab'],
+                     float(r['duration_ms']), 
+-                    1 if r[LABEL] != '0' else 0,
++                    long_view,
+                     feat['tag'],
+                     feat['video_type'],
+                     feat['upload_type'],
+-                    feat['music_type']
++                    feat['music_type'],
++                    is_click,
++                    is_like,
++                    is_comment,
++                    is_forward,
++                    is_follow
+                 ))
+ 
+@@ -95,4 +107,9 @@
+         y = np.empty(len(rws), dtype=np.float32)
+         users = []
++        clicks = np.zeros(len(rws), dtype=np.float32)
++        likes = np.zeros(len(rws), dtype=np.float32)
++        comments = np.zeros(len(rws), dtype=np.float32)
++        forwards = np.zeros(len(rws), dtype=np.float32)
++        follows = np.zeros(len(rws), dtype=np.float32)
+         for n, x in enumerate(rws):
+             for i, v in enumerate(raw(x)):
+@@ -100,5 +117,10 @@
+             y[n] = x[6]
+             users.append(x[1])
+-        enc[name] = (X, y, users)
++            clicks[n] = x[11]
++            likes[n] = x[12]
++            comments[n] = x[13]
++            forwards[n] = x[14]
++            follows[n] = x[15]
++        enc[name] = (X, y, users, clicks, likes, comments, forwards, follows)
+     return enc, int(sum(field_dims))
+ 
+@@ -149,17 +171,16 @@
+         return lin + inter, V_X, sum_V
+ 
+-    def step_listwise(self, X_pos, X_neg):
+-        B = len(X_pos)
+-        C = X_neg.shape[1]
+-
+-        X_neg_flat = X_neg.reshape(-1, X_neg.shape[-1])
+-        X_combined = np.concatenate([X_pos, X_neg_flat], axis=0)
+-
+-        s_combined, V_combined, sum_V_combined = self._forward(X_combined)
+-
+-        s_pos = s_combined[:B]
+-        s_neg = s_combined[B:].reshape(B, C)
+-
+-        scores = np.column_stack([s_pos, s_neg])
++    def step_listwise(self, X_batch, rels_batch):
++        B, K, F = X_batch.shape
++        X_flat = X_batch.reshape(-1, F)
++
++        s_flat, V_flat, sum_V_flat = self._forward(X_flat)
++        scores = s_flat.reshape(B, K)
++
++        relevance_sums = np.sum(rels_batch, axis=1, keepdims=True)
++        mask = (relevance_sums > 0).astype(np.float32)
++
++        relevance_sums = np.where(relevance_sums > 0, relevance_sums, 1.0)
++        targets = rels_batch / relevance_sums
+ 
+         scores_max = np.max(scores, axis=1, keepdims=True)
+@@ -167,21 +188,18 @@
+         probs = exp_scores / np.sum(exp_scores, axis=1, keepdims=True)
+ 
+-        loss = -np.mean(np.log(probs[:, 0] + 1e-15))
+-
+-        grad_scores = probs.copy()
+-        grad_scores[:, 0] -= 1.0
+-        grad_scores /= B
+-
+-        grad_spos = grad_scores[:, 0]
+-        grad_sneg_flat = grad_scores[:, 1:].ravel()
+-        grad_combined = np.concatenate([grad_spos, grad_sneg_flat], axis=0)
++        loss_per_row = -np.sum(targets * np.log(probs + 1e-15), axis=1)
++        loss = np.sum(loss_per_row * mask[:, 0]) / (np.sum(mask) + 1e-15)
++
++        grad_scores = (probs - targets) * mask
++        grad_scores /= (np.sum(mask) + 1e-15)
++        grad_flat = grad_scores.ravel()
+ 
+         dV = np.zeros_like(self.V)
+         dW = np.zeros_like(self.W)
+-        db = np.float32(np.sum(grad_combined))
+-
+-        np.add.at(dW, X_combined.ravel(), np.repeat(grad_combined, X_combined.shape[1]))
+-        grad_V = grad_combined[:, None, None] * (sum_V_combined[:, None, :] - V_combined)
+-        np.add.at(dV, X_combined.ravel(), grad_V.reshape(-1, self.k))
++        db = np.float32(np.sum(grad_flat))
++
++        np.add.at(dW, X_flat.ravel(), np.repeat(grad_flat, F))
++        grad_V = grad_flat[:, None, None] * (sum_V_flat[:, None, :] - V_flat)
++        np.add.at(dV, X_flat.ravel(), grad_V.reshape(-1, self.k))
+ 
+         self.t += 1
+@@ -208,34 +226,48 @@
+ 
+ 
+-def prepare_list_sampler(ytr, users, rng, C=20):
+-    user_neg = defaultdict(list)
+-    for idx, (y, u) in enumerate(zip(ytr, users)):
+-        if y == 0:
+-            user_neg[u].append(idx)
+-
+-    all_pos = np.where(ytr == 1)[0]
+-
+-    valid_pos = []
+-    pos_to_neg_pool = []
+-    for pos_idx in all_pos:
+-        u = users[pos_idx]
+-        negs = user_neg[u]
+-        if len(negs) > 0:
+-            valid_pos.append(pos_idx)
+-            pos_to_neg_pool.append(np.array(negs, dtype=np.int32))
+-
+-    valid_pos = np.array(valid_pos, dtype=np.int32)
+-
+-    def sample():
+-        n_pos = len(valid_pos)
+-        sampled_neg = np.empty((n_pos, C), dtype=np.int32)
+-        for i, pool in enumerate(pos_to_neg_pool):
++def prepare_user_lists(utr, ytr, click_tr, like_tr, comment_tr, forward_tr, follow_tr):
++    user_to_indices = defaultdict(list)
++    for idx, u in enumerate(utr):
++        user_to_indices[u].append(idx)
++
++    relevances = ytr + 0.5 * click_tr + 1.0 * like_tr + 1.0 * comment_tr + 1.0 * forward_tr + 1.0 * follow_tr
++
++    active_users = []
++    user_pools = []
++    user_relevances = []
++
++    for u, idxs in user_to_indices.items():
++        idxs = np.array(idxs, dtype=np.int32)
++        rels = relevances[idxs]
++        if np.sum(rels) > 0:
++            active_users.append(u)
++            user_pools.append(idxs)
++            user_relevances.append(rels)
++
++    return active_users, user_pools, user_relevances
++
++
++def get_sampler(user_pools, user_relevances, K, rng):
++    num_users = len(user_pools)
++
++    def sample(batch_size):
++        user_indices = rng.integers(0, num_users, size=batch_size)
++        batch_X_idx = np.empty((batch_size, K), dtype=np.int32)
++        batch_rels = np.empty((batch_size, K), dtype=np.float32)
++
++        for i, u_idx in enumerate(user_indices):
++            pool = user_pools[u_idx]
++            rels = user_relevances[u_idx]
+             n_pool = len(pool)
+-            if n_pool >= C:
+-                sampled_neg[i] = rng.choice(pool, size=C, replace=False)
++
++            if n_pool >= K:
++                sampled_sub_indices = rng.choice(n_pool, size=K, replace=False)
+             else:
+-                sampled_neg[i] = pool[rng.integers(0, n_pool, size=C)]
+-        perm = rng.permutation(n_pos)
+-        return valid_pos[perm], sampled_neg[perm]
++                sampled_sub_indices = rng.choice(n_pool, size=K, replace=True)
++
++            batch_X_idx[i] = pool[sampled_sub_indices]
++            batch_rels[i] = rels[sampled_sub_indices]
++
++        return batch_X_idx, batch_rels
+ 
+     return sample
+@@ -252,6 +284,6 @@
+     ap.add_argument("--wd", type=float, default=1e-4)
+     ap.add_argument("--epochs", type=int, default=30)
+-    ap.add_argument("--bs", type=int, default=4096)
+-    ap.add_argument("--neg_samples", type=int, default=20)
++    ap.add_argument("--bs", type=int, default=256)
++    ap.add_argument("--K", type=int, default=20)
+     ap.add_argument("--patience", type=int, default=8)
+     a = ap.parse_args()
+@@ -264,25 +296,28 @@
+ 
+     enc, dim = encode_custom(splits)
+-    Xtr, ytr, utr = enc["train"]
+-    Xva, yva, uva = enc["valid"]
++    Xtr, ytr, utr, click_tr, like_tr, comment_tr, forward_tr, follow_tr = enc["train"]
++    Xva, yva, uva, _, _, _, _, _ = enc["valid"]
+ 
+     rng = np.random.default_rng(a.seed)
+-    sampler = prepare_list_sampler(ytr, utr, rng, C=a.neg_samples)
++    active_users, user_pools, user_relevances = prepare_user_lists(
++        utr, ytr, click_tr, like_tr, comment_tr, forward_tr, follow_tr
++    )
++    sampler = get_sampler(user_pools, user_relevances, a.K, rng)
+ 
+     m = ListwiseFM(dim, k=a.k, lr=a.lr, weight_decay=a.wd, seed=a.seed)
+     best, best_state, bad = -1.0, None, 0
++    steps_per_epoch = len(active_users) // a.bs
+ 
+     for ep in range(1, a.epochs + 1):
+         te = time.time()
+-        pos_idxs, neg_idxs = sampler()
+         losses = []
+-        for i in range(0, len(pos_idxs), a.bs):
+-            b_pos = pos_idxs[i:i + a.bs]
+-            b_neg = neg_idxs[i:i + a.bs]
+-            loss = m.step_listwise(Xtr[b_pos], Xtr[b_neg])
++        for _ in range(steps_per_epoch):
++            b_idx, b_rels = sampler(a.bs)
++            b_X = Xtr[b_idx]
++            loss = m.step_listwise(b_X, b_rels)
+             losses.append(loss)
+ 
+         va = evaluate(uva, yva, m.predict(Xva))
+-        print(f"  epoch {ep:2d} | Listwise loss {np.mean(losses):.4f} "
++        print(f"  epoch {ep:2d} | ListNet loss {np.mean(losses):.4f} "
+               f"| valid GAUC {va['GAUC']:.4f} nDCG@5 {va['nDCG@5']:.4f} "
+               f"primary {va['primary']:.4f} | {time.time()-te:.1f}s")

@@ -1,0 +1,153 @@
+--- node_000.py
++++ node_003.py
+@@ -19,6 +19,6 @@
+ 
+ 
+-class PairwiseFM:
+-    def __init__(self, num_features, k=16, lr=0.003, weight_decay=1e-5, seed=0):
++class ListwiseFM:
++    def __init__(self, num_features, k=16, lr=0.005, weight_decay=1e-5, seed=0):
+         rng = np.random.default_rng(seed)
+         self.num_features = num_features
+@@ -56,31 +56,44 @@
+         return lin + inter, V_X, sum_V
+ 
+-    def step_pairwise(self, X_pos, X_neg):
++    def step_listwise(self, X_pos, X_neg):
++        # X_pos: (B, F)
++        # X_neg: (B, C, F)
+         B = len(X_pos)
+-        s_pos, V_pos, sum_V_pos = self._forward(X_pos)
+-        s_neg, V_neg, sum_V_neg = self._forward(X_neg)
+-
+-        diff = s_pos - s_neg
+-        # BPR Loss gradient wrt diff: -1 / (1 + exp(diff))
+-        # Sigmoid(-diff) = 1 / (1 + exp(diff))
+-        sig_neg_diff = 1.0 / (1.0 + np.exp(np.clip(diff, -30.0, 30.0)))
+-        loss = np.mean(np.log(1.0 + np.exp(np.clip(-diff, -30.0, 30.0))))
+-
+-        dL_spos = -sig_neg_diff / B
+-        dL_sneg = sig_neg_diff / B
++        C = X_neg.shape[1]
++
++        X_neg_flat = X_neg.reshape(-1, X_neg.shape[-1])
++        X_combined = np.concatenate([X_pos, X_neg_flat], axis=0)
++
++        s_combined, V_combined, sum_V_combined = self._forward(X_combined)
++
++        s_pos = s_combined[:B]
++        s_neg = s_combined[B:].reshape(B, C)
++
++        scores = np.column_stack([s_pos, s_neg])  # (B, C+1)
++
++        # Softmax over the C+1 items
++        scores_max = np.max(scores, axis=1, keepdims=True)
++        exp_scores = np.exp(scores - scores_max)
++        probs = exp_scores / np.sum(exp_scores, axis=1, keepdims=True)
++
++        loss = -np.mean(np.log(probs[:, 0] + 1e-15))
++
++        # Gradients wrt scores
++        grad_scores = probs.copy()
++        grad_scores[:, 0] -= 1.0
++        grad_scores /= B  # mean gradient over the batch
++
++        grad_spos = grad_scores[:, 0]
++        grad_sneg_flat = grad_scores[:, 1:].ravel()
++        grad_combined = np.concatenate([grad_spos, grad_sneg_flat], axis=0)
+ 
+         dV = np.zeros_like(self.V)
+         dW = np.zeros_like(self.W)
+-        db = np.float32(np.sum(dL_spos) + np.sum(dL_sneg))
+-
+-        # Backward for pos
+-        np.add.at(dW, X_pos.ravel(), np.repeat(dL_spos, X_pos.shape[1]))
+-        grad_V_pos = dL_spos[:, None, None] * (sum_V_pos[:, None, :] - V_pos)
+-        np.add.at(dV, X_pos.ravel(), grad_V_pos.reshape(-1, self.k))
+-
+-        # Backward for neg
+-        np.add.at(dW, X_neg.ravel(), np.repeat(dL_sneg, X_neg.shape[1]))
+-        grad_V_neg = dL_sneg[:, None, None] * (sum_V_neg[:, None, :] - V_neg)
+-        np.add.at(dV, X_neg.ravel(), grad_V_neg.reshape(-1, self.k))
++        db = np.float32(np.sum(grad_combined))
++
++        # Backward pass
++        np.add.at(dW, X_combined.ravel(), np.repeat(grad_combined, X_combined.shape[1]))
++        grad_V = grad_combined[:, None, None] * (sum_V_combined[:, None, :] - V_combined)
++        np.add.at(dV, X_combined.ravel(), grad_V.reshape(-1, self.k))
+ 
+         # Adam update
+@@ -109,5 +122,5 @@
+ 
+ 
+-def prepare_pair_sampler(ytr, users, rng):
++def prepare_list_sampler(ytr, users, rng, C=15):
+     user_neg = defaultdict(list)
+     for idx, (y, u) in enumerate(zip(ytr, users)):
+@@ -115,23 +128,25 @@
+             user_neg[u].append(idx)
+ 
+-    all_neg = np.where(ytr == 0)[0]
+     all_pos = np.where(ytr == 1)[0]
+ 
+-    pos_to_neg_pools = []
++    # Keep only positive samples where the user has at least one negative sample
++    valid_pos = []
++    pos_to_neg_pool = []
+     for pos_idx in all_pos:
+         u = users[pos_idx]
+         negs = user_neg[u]
+         if len(negs) > 0:
+-            pos_to_neg_pools.append(np.array(negs, dtype=np.int32))
+-        else:
+-            pos_to_neg_pools.append(all_neg)
++            valid_pos.append(pos_idx)
++            pos_to_neg_pool.append(np.array(negs, dtype=np.int32))
++
++    valid_pos = np.array(valid_pos, dtype=np.int32)
+ 
+     def sample():
+-        n_pos = len(all_pos)
+-        sampled_neg = np.empty(n_pos, dtype=np.int32)
+-        for i, pool in enumerate(pos_to_neg_pools):
+-            sampled_neg[i] = pool[rng.integers(0, len(pool))]
++        n_pos = len(valid_pos)
++        sampled_neg = np.empty((n_pos, C), dtype=np.int32)
++        for i, pool in enumerate(pos_to_neg_pool):
++            sampled_neg[i] = pool[rng.integers(0, len(pool), size=C)]
+         perm = rng.permutation(n_pos)
+-        return all_pos[perm], sampled_neg[perm]
++        return valid_pos[perm], sampled_neg[perm]
+ 
+     return sample
+@@ -148,5 +163,6 @@
+     ap.add_argument("--wd", type=float, default=1e-5)
+     ap.add_argument("--epochs", type=int, default=30)
+-    ap.add_argument("--bs", type=int, default=4096)
++    ap.add_argument("--bs", type=int, default=2048)
++    ap.add_argument("--neg_samples", type=int, default=15)
+     ap.add_argument("--patience", type=int, default=6)
+     a = ap.parse_args()
+@@ -163,7 +179,7 @@
+ 
+     rng = np.random.default_rng(a.seed)
+-    sampler = prepare_pair_sampler(ytr, utr, rng)
+-
+-    m = PairwiseFM(dim, k=a.k, lr=a.lr, weight_decay=a.wd, seed=a.seed)
++    sampler = prepare_list_sampler(ytr, utr, rng, C=a.neg_samples)
++
++    m = ListwiseFM(dim, k=a.k, lr=a.lr, weight_decay=a.wd, seed=a.seed)
+     best, best_state, bad = -1.0, None, 0
+ 
+@@ -175,9 +191,9 @@
+             b_pos = pos_idxs[i:i + a.bs]
+             b_neg = neg_idxs[i:i + a.bs]
+-            loss = m.step_pairwise(Xtr[b_pos], Xtr[b_neg])
++            loss = m.step_listwise(Xtr[b_pos], Xtr[b_neg])
+             losses.append(loss)
+ 
+         va = evaluate(uva, yva, m.predict(Xva))
+-        print(f"  epoch {ep:2d} | BPR loss {np.mean(losses):.4f} "
++        print(f"  epoch {ep:2d} | Listwise loss {np.mean(losses):.4f} "
+               f"| valid GAUC {va['GAUC']:.4f} nDCG@5 {va['nDCG@5']:.4f} "
+               f"primary {va['primary']:.4f} | {time.time()-te:.1f}s")
