@@ -27,6 +27,12 @@ the run log, but they are warnings rather than rejections. A false rejection is
 not free: it burns an iteration and teaches the agent to avoid a construct that
 was never dangerous.
 
+A second, unrelated check lives here too: assert_parses() compiles the
+candidate before the executor is handed it. That is not about data access at
+all - it is here because this module is already "everything we check before
+running generated code", and a syntax error found in microseconds beats the
+same error found after a subprocess launch and a 1.1M-row load.
+
 What still trips it, deliberately
 ---------------------------------
 The organizer's `baseline.py` and `submit.py` are rejected, because both carry
@@ -66,6 +72,39 @@ SUSPICIOUS_PATTERNS = [
 
 class GuardRejection(Exception):
     """Generated code could reach data outside the agent's visible directory."""
+
+
+class SyntaxRejection(Exception):
+    """Generated code is not valid Python and cannot be worth executing."""
+
+
+def assert_parses(code):
+    """Compile the candidate without running it.
+
+    Half of run final_01's failures were SyntaxError, each discovered by
+    launching a subprocess and loading 1.1M rows before Python reached the bad
+    line. compile() finds them in microseconds and reports the line and column,
+    which is a far better repair prompt than "exited with code 1".
+
+    This is a correctness check, not a safety one: compile() executes nothing,
+    so it stays well clear of the sandbox boundary the executor enforces.
+    """
+    try:
+        compile(code, "<candidate>", "exec")
+    except SyntaxError as e:
+        src = (code.splitlines()[e.lineno - 1].strip()[:120]
+               if e.lineno and e.lineno <= len(code.splitlines()) else "")
+        raise SyntaxRejection(
+            f"The script is not valid Python and was not run. "
+            f"{type(e).__name__} at line {e.lineno}"
+            + (f", column {e.offset}" if e.offset else "") + f": {e.msg}\n"
+            + (f"      {src}\n" if src else "") +
+            "\nThis is a syntax error in the code you wrote, not a runtime "
+            "failure and not a truncated response. Read the line above, fix "
+            "it, and return the complete script.")
+    except ValueError as e:
+        # e.g. source containing null bytes - compile() raises ValueError.
+        raise SyntaxRejection(f"The script could not be compiled: {e}")
 
 
 def _scan(code, patterns):

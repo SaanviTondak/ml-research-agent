@@ -108,24 +108,56 @@ had already achieved. The repair pressure was actively destroying the solution.
 
 ## Fixes
 
-In priority order. None of these were applied to the submitted run; they are
-the plan for `final_02`.
+All four are implemented. None were applied to the submitted run — that result
+stands as scored, and the tag `hackathon-submission` marks the tree it came
+from. They are the starting point for `final_02`.
 
-1. **Cap debug depth.** After 3 consecutive failed repairs on one lineage,
-   abandon it: mark the subtree dead and select `improve` from the best scored
-   node instead. This alone would have returned ~20 iterations to useful work.
-2. **`compile()` the generated source before spawning a subprocess.** Eleven of
-   22 failures were `SyntaxError`, each of which cost a full process launch and
-   a data load to discover. A syntax check is free and the error message it
-   produces is far more precise than "exited with code 1".
-3. **Handle `MAX_TOKENS` by continuing, not by shrinking.** Raise the cap, and
-   on truncation re-request with the partial script as a prefix rather than
-   instructing the model to write less.
-4. **Put the real stack trace in front of the stale narrative.** The failure
-   message the loop injects should lead with the actual exception and explicitly
-   tell the model to disregard its previous diagnosis if it conflicts.
-5. **Never let a repair regress below the incumbent.** A debug attempt that
-   scores worse than the best node should be discarded, not treated as progress.
+**1. Cap the repair budget.** [`agent/state.py`](../agent/state.py) —
+`MAX_DEBUG_ATTEMPTS = 3`. `select_parent()` now skips a broken child that has
+already had three debug attempts, so the search falls back to improving the
+best scored node. This is the whole bug; it is four lines of policy.
+
+**2. `compile()` before spawning a subprocess.**
+[`agent/guard.py`](../agent/guard.py) — `assert_parses()`. Eleven of 22
+failures were `SyntaxError`, each discovered only after a process launch and a
+1.1M-row load. `compile()` finds them in microseconds and reports the line,
+column and message, which is a far better repair prompt than "exited with code
+1". It executes nothing.
+
+**3. Handle `MAX_TOKENS` by continuing, not shrinking.**
+[`agent/loop.py`](../agent/loop.py) — the injected message now asks the model to
+reproduce what it wrote and carry on from the cut, explicitly forbidding
+redesign or dropping features. The old message asked for a *shorter* script,
+and the model complied by deleting features: the three repairs that did run
+came back at 0.4791 / 0.5961 / 0.4832 against an incumbent of 0.6042. The
+repair pressure was destroying the solution.
+
+**4. Put the error in front of the stale narrative.**
+[`agent/prompts.py`](../agent/prompts.py) — `debug_prompt()` used to open with
+the failed node's own hypothesis, which is exactly where the wrong
+self-diagnosis lived. The traceback now comes first, the previous hypothesis is
+demoted to "intent only" and explicitly marked unreliable, and the prompt states
+how much repair budget is left so a final attempt reaches for the smallest fix.
+
+### Verification
+
+[`tests/test_search_policy.py`](../tests/test_search_policy.py) rebuilds this
+run's tree up to node 10 — the moment the trap closed — replays 23 failed
+repairs against it, and asserts node 10 is selected exactly
+`MAX_DEBUG_ATTEMPTS` times and never again:
+
+```
+test_the_trap_cannot_recur                     PASSED
+test_search_escapes_after_the_repair_budget    PASSED
+test_a_successful_repair_clears_the_debug_state PASSED
+```
+
+### Not done
+
+**Never let a repair regress below the incumbent.** A debug attempt scoring
+worse than the best node is still recorded as a normal result. It cannot
+corrupt selection — `best()` takes the max — so this is budget hygiene rather
+than a correctness problem, and it is left for `final_02`.
 
 ## What this run got right
 

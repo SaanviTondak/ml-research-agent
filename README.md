@@ -6,6 +6,8 @@ read its own stack traces, and try again — with no human in the loop. Built fo
 **TikTok TechJam Track 2** (solo entry) against the KuaiRand-Pure within-user
 ranking benchmark and the organizers' Factorization Machine baseline.
 
+[![tests](https://github.com/SaanviTondak/ml-research-agent/actions/workflows/tests.yml/badge.svg)](https://github.com/SaanviTondak/ml-research-agent/actions/workflows/tests.yml)
+
 It ran for 58 minutes, wrote 34 candidate models, recovered unaided from 23 of
 its own failures, and beat the baseline on a held-out test split it was
 structurally prevented from ever reading.
@@ -104,8 +106,17 @@ out of 22 failures; the real distribution was 11 `SyntaxError`, 5 genuine
 truncations, 3 NaN outputs, 2 `IndexError`, 1 `ValueError`. It was confidently
 misattributing its failures, and I had given it no mechanism to escape.
 
-This is the most useful thing the run produced. Full analysis, and the fixes,
-in [`docs/postmortem.md`](docs/postmortem.md).
+This is the most useful thing the run produced. It has since been fixed: the
+repair budget is capped at 3 attempts per node, candidates are `compile()`d
+before a subprocess is spent on them, truncated responses are asked to continue
+rather than to shrink, and the debug prompt now leads with the traceback
+instead of the model's own previous guess.
+[`tests/test_search_policy.py`](tests/test_search_policy.py) rebuilds this exact
+tree and asserts the trap cannot recur. Full analysis in
+[`docs/postmortem.md`](docs/postmortem.md).
+
+The submitted result predates those fixes and stands as scored; the tag
+`hackathon-submission` marks the tree it came from.
 
 ### What was submitted
 
@@ -253,6 +264,7 @@ submission/
   run_log.md          the live run log
   journal.jsonl       the raw event stream
   results.md          every attempt, and the sealed test result
+tests/                pytest suite - search policy and pre-execution checks
 tools/                preflight and rendering utilities
 kuairand-starter-kit/ the organizers' code, unmodified
 harness_check.py      9 end-to-end checks, no API key required
@@ -269,6 +281,13 @@ committed.
 ---
 
 ## Quickstart
+
+```bash
+pip install numpy pytest
+python3 -m pytest tests/            # no dataset, no API key, ~0.1 s
+```
+
+Then, with the dataset in place:
 
 ```bash
 # Place KuaiRand-Pure under kuairand-starter-kit/KuaiRand-Pure/data/

@@ -47,12 +47,14 @@ if __package__ in (None, ""):
 
 from agent import prompts, scorer
 from agent.executor import run_script
-from agent.guard import assert_clean, GuardRejection
+from agent.guard import (assert_clean, assert_parses, GuardRejection,
+                         SyntaxRejection)
 from agent.journal import Journal, new_run_dir, render_markdown
 from agent.llm import (LLM, GeminiBackend, TokenLedger, LLMError,
                        QuotaExhausted, extract_code, DEFAULT_MODEL)
 from agent.paths import VISIBLE_DATA
-from agent.state import Node, SolutionJournal, EPS, N_CONVERGE
+from agent.state import (Node, SolutionJournal, EPS, N_CONVERGE,
+                         MAX_DEBUG_ATTEMPTS)
 from agent.verify_firewall import verify, FirewallBreach
 
 MAX_ITERATIONS = 50
@@ -89,6 +91,7 @@ class AgentLoop:
         self.eda = ""
         self.t0 = time.time()
         self.interventions = 0        # stays 0; a human touching this is one
+        self._announced_abandoned = set()   # log each give-up once
 
     # ------------------------------------------------------------ utilities
     def log(self, event, **kw):
@@ -164,6 +167,15 @@ class AgentLoop:
         parent = self.state.select_parent()
         if parent is None:
             return "draft", None
+        for dead in self.state.abandoned():
+            if dead.id not in self._announced_abandoned:
+                self._announced_abandoned.add(dead.id)
+                self.log("node_abandoned", node_id=dead.id, status="info",
+                         attempts=self.state.repair_attempts(dead.id),
+                         detail=(dead.failure_reason or "")[:300])
+                self.say(f"  giving up on #{dead.id} after "
+                         f"{self.state.repair_attempts(dead.id)} repairs; "
+                         f"back to the best working solution")
         if parent.is_buggy:
             return "debug", parent
         # Periodically branch out so the search does not collapse onto one line.
@@ -177,7 +189,12 @@ class AgentLoop:
             return prompts.draft_prompt(summary, self.eda,
                                         n_existing=len(self.state.nodes))
         if stage == "debug":
-            return prompts.debug_prompt(parent, summary)
+            # Tell the model how much repair budget is left, so a last attempt
+            # reaches for the smallest fix rather than the most ambitious one.
+            return prompts.debug_prompt(
+                parent, summary,
+                attempt=self.state.repair_attempts(parent.id) + 1,
+                max_attempts=MAX_DEBUG_ATTEMPTS)
         return prompts.improve_prompt(parent, summary, self.eda)
 
     # -------------------------------------------------------- one iteration
@@ -220,11 +237,20 @@ class AgentLoop:
             # The script is cut off mid-line; running it only yields a
             # SyntaxError that says nothing useful. Name the real cause so the
             # debug step completes the script rather than re-deriving it.
+            #
+            # Asking for a *shorter* script here was a mistake in final_01:
+            # the model complied by dropping features, and the three repairs
+            # that did run came back at 0.4791 / 0.5961 / 0.4832 against an
+            # incumbent of 0.6042. The repair pressure destroyed the solution.
+            # Ask it to continue what it already wrote instead.
             node.failure_reason = (
-                "Your response was cut off at the output token limit, so the "
-                "script is incomplete. Complete it, and keep it shorter - "
-                "under ~250 lines. Prefer a simpler model you can finish "
-                "writing over an elaborate one you cannot.")
+                "Your response stopped at the output token limit, so the "
+                "script below is incomplete - it ends mid-statement. The "
+                "approach is fine; it was not finished.\n\n"
+                "Reproduce the script above verbatim up to where it stops, "
+                "then continue from that point to a complete, runnable file. "
+                "Do not redesign it, do not drop features to save room, and "
+                "do not start over.")
             self.log("response_truncated", node_id=node_id, status="error",
                      code_chars=len(code))
             self.say("  response truncated at output limit; queued for repair")
@@ -234,6 +260,17 @@ class AgentLoop:
         # in the run log, and it is what the next iteration has to repair.
         path = self.dir / "nodes" / f"node_{node_id:03d}.py"
         path.write_text(code)
+
+        # --- syntax: compile before spending a subprocess on it ------------
+        try:
+            assert_parses(code)
+        except SyntaxRejection as e:
+            node.failure_reason = str(e)
+            self.log("syntax_rejected", node_id=node_id, status="error",
+                     error=str(e).splitlines()[0][:300])
+            self.say(f"  invalid Python; not executed "
+                     f"({str(e).splitlines()[0][:80]})")
+            return self.finish_node(node, resp)
 
         # --- guard: static check before anything executes ------------------
         try:

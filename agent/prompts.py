@@ -354,20 +354,36 @@ HYPOTHESIS: <the change and why>
 """
 
 
-def debug_prompt(node, journal_summary):
+def debug_prompt(node, journal_summary, attempt=1, max_attempts=3):
+    """Prompt to repair a broken node.
+
+    Ordering matters here. The first version led with the failed attempt's own
+    hypothesis, and in run final_01 that hypothesis was where a stale
+    self-diagnosis lived: "the previous script was cut off at the output token
+    limit" appears in 22 of the last 23 nodes, long after truncation had
+    stopped being the cause. The model read its own wrong explanation first and
+    kept solving for it while the real traceback sat further down the prompt.
+
+    The error now comes first, and the previous diagnosis is explicitly marked
+    unreliable. See docs/postmortem.md.
+    """
+    budget = ""
+    if attempt >= max_attempts:
+        budget = (f"\n**This is repair attempt {attempt} of {max_attempts}.** "
+                  "If it fails again this line of work is abandoned and the "
+                  "search returns to the best working solution. Prefer the "
+                  "smallest change that makes the script run over a better "
+                  "version of it that might not.\n")
+    elif attempt > 1:
+        budget = f"\nThis is repair attempt {attempt} of {max_attempts}.\n"
+
     return _briefing() + f"""
 
 # Your task right now: fix a broken script
 
-Attempt #{node.id} failed. Diagnose it from the error and fix it.
-
-Its hypothesis was:
-{node.hypothesis}
-
-```python
-{node.code}
-```
-
+Attempt #{node.id} failed. Diagnose it **from the error below**, not from what
+you believed was wrong last time.
+{budget}
 ## What went wrong
 {node.failure_reason}
 
@@ -380,6 +396,18 @@ Its hypothesis was:
 ```
 {node.stdout_tail[-1200:]}
 ```
+
+## The script that failed
+```python
+{node.code}
+```
+
+## What this attempt was trying to do
+{node.hypothesis}
+
+Treat that last line as context for the *intent* only. If it contains a claim
+about why the previous attempt failed, ignore it - it is the previous
+attempt's guess, it is frequently wrong, and the error above is the evidence.
 
 Fix the actual cause. Do not abandon the idea and submit something unrelated,
 and do not simply retry the same code. If the approach cannot work as written,

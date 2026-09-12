@@ -31,6 +31,18 @@ if __package__ in (None, ""):
 
 EPS = 0.002          # organizers' convergence epsilon (~2.5 sigma)
 N_CONVERGE = 3       # consecutive non-improving iterations before stopping
+MAX_DEBUG_ATTEMPTS = 3
+"""How many times one broken node may be repaired before it is abandoned.
+
+Run final_01 spent 23 of its 34 iterations - 68% of the budget - repairing a
+single node. select_parent() looked for broken children *of the best node*,
+but a repair attaches to the node it repairs, not to best. So the repairs were
+never children of best, the original breakage stayed selected, and the search
+could not leave it. Nodes 4 and 7 sat scored and unextended throughout.
+
+Three attempts is enough to fix a typo or an off-by-one. A node that survives
+three is not going to be repaired by a fourth; the budget is better spent
+improving something that already works. See docs/postmortem.md."""
 MIN_SCORED_BEFORE_CONVERGENCE = 12
 """The organizers' rule - three consecutive iterations gaining <= 0.002 -
 presumes a search that has had a chance to get going. Applied from the first
@@ -153,19 +165,37 @@ class SolutionJournal:
     def children(self, node_id):
         return [n for n in self.nodes if n.parent_id == node_id]
 
+    def repair_attempts(self, node_id):
+        """How many debug nodes have already been spent on this one."""
+        return sum(1 for n in self.nodes
+                   if n.parent_id == node_id and n.stage == "debug")
+
+    def is_abandoned(self, node, max_attempts=MAX_DEBUG_ATTEMPTS):
+        """True once a broken node has exhausted its repair budget."""
+        return node.is_buggy and self.repair_attempts(node.id) >= max_attempts
+
+    def abandoned(self, max_attempts=MAX_DEBUG_ATTEMPTS):
+        return [n for n in self.nodes if self.is_abandoned(n, max_attempts)]
+
     # ------------------------------------------------------------ selection
-    def select_parent(self):
+    def select_parent(self, max_attempts=MAX_DEBUG_ATTEMPTS):
         """Greedy: improve the best working solution.
 
         If the best node's most recent child broke, fix that child instead -
         an unfixed crash otherwise gets abandoned in favour of re-improving
         the same parent over and over, which wastes iterations on ground the
         agent has already covered.
+
+        A broken child is only worth returning to while it still has repair
+        budget. Once it has had max_attempts and is still broken, it is
+        abandoned and the search goes back to improving the best node - the
+        escape hatch run final_01 did not have.
         """
         best = self.best()
         if best is None:
             return None
-        broken_kids = [c for c in self.children(best.id) if c.is_buggy]
+        broken_kids = [c for c in self.children(best.id)
+                       if c.is_buggy and not self.is_abandoned(c, max_attempts)]
         if broken_kids:
             return broken_kids[-1]
         return best
