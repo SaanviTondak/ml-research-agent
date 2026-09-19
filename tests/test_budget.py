@@ -20,13 +20,28 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
+from agent.llm import Backend
 from agent.loop import AgentLoop
+
+
+class NoBackend(Backend):
+    """Never called. Injected so constructing a loop needs no API key."""
+    name = "none"
+    model = "none"
+
+    def complete(self, system, user, **kw):
+        raise AssertionError("these tests must not call the model")
+
+
+def make_loop(run_dir):
+    return AgentLoop(run_dir=run_dir, skip_eda=True, backend=NoBackend(),
+                     calibrate_policy=False)
 
 
 @pytest.fixture
 def loop(tmp_path):
     """A loop object with no LLM, no data and no journal activity."""
-    return AgentLoop(run_dir=tmp_path / "run", skip_eda=True)
+    return make_loop(tmp_path / "run")
 
 
 def test_elapsed_uses_the_same_clock_as_the_timeout(loop, monkeypatch):
@@ -53,14 +68,14 @@ def test_awake_time_is_charged_normally(loop, monkeypatch):
 def test_awake_time_accumulates_across_resumes(tmp_path, monkeypatch):
     """final_01 was resumed three times; each segment got a fresh 6h cap."""
     run_dir = tmp_path / "run"
-    first = AgentLoop(run_dir=run_dir, skip_eda=True)
+    first = make_loop(run_dir)
     t_mono = time.monotonic()
     monkeypatch.setattr(time, "monotonic", lambda: t_mono + 5400)   # 1.5 h
     first._save_budget()
     assert first.elapsed_h() == pytest.approx(1.5, abs=1e-3)
 
     monkeypatch.undo()
-    resumed = AgentLoop(run_dir=run_dir, skip_eda=True)
+    resumed = make_loop(run_dir)
     assert resumed.prior_awake_s == pytest.approx(5400, abs=1.0)
     assert resumed.elapsed_h() == pytest.approx(1.5, abs=1e-2), \
         "a resume must not reset the run's time budget"
@@ -68,11 +83,11 @@ def test_awake_time_accumulates_across_resumes(tmp_path, monkeypatch):
 
 def test_a_missing_or_corrupt_budget_file_is_not_fatal(tmp_path):
     run_dir = tmp_path / "run"
-    fresh = AgentLoop(run_dir=run_dir, skip_eda=True)
+    fresh = make_loop(run_dir)
     assert fresh.prior_awake_s == 0.0
 
     fresh.budget_path.write_text("{not json")
-    assert AgentLoop(run_dir=run_dir, skip_eda=True).prior_awake_s == 0.0
+    assert make_loop(run_dir).prior_awake_s == 0.0
 
 
 def test_the_budget_file_records_both_clocks(loop):

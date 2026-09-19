@@ -93,8 +93,8 @@ def make_loop(tmp_path, responses, **kw):
     loop = AgentLoop(run_dir=tmp_path / "run", task=task, skip_eda=True,
                      max_iterations=kw.pop("max_iterations", 4),
                      candidate_timeout_s=120,
-                     calibrate_policy=kw.pop("calibrate_policy", False), **kw)
-    loop.llm.backend = StubBackend(responses)
+                     calibrate_policy=kw.pop("calibrate_policy", False),
+                     backend=StubBackend(responses), **kw)
     loop.llm.fallbacks = []
     return loop
 

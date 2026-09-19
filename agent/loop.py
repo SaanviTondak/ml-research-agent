@@ -70,7 +70,8 @@ class AgentLoop:
                  max_iterations=MAX_ITERATIONS, max_hours=MAX_HOURS,
                  candidate_timeout_s=CANDIDATE_TIMEOUT_S,
                  n_drafts=N_DRAFTS, verify_seeds=VERIFY_SEEDS,
-                 data_dir=None, skip_eda=False, task=None, calibrate_policy=True):
+                 data_dir=None, skip_eda=False, task=None,
+                 calibrate_policy=True, backend=None):
         # Defaulted rather than required: the documented CLI, harness_check.py
         # and tests/test_budget.py all construct a loop without naming a task,
         # and a required argument would break them for no benefit.
@@ -86,7 +87,12 @@ class AgentLoop:
         self.policy = PolicyConfig()
         self.state = SolutionJournal(self.dir / "state.json", policy=self.policy)
         self.ledger = TokenLedger(self.dir / "tokens.json")
-        self.llm = LLM(backend=GeminiBackend(model=model),
+        # Injectable so a caller that supplies its own backend never touches
+        # the API-key lookup. GeminiBackend() loads the key in __init__, so
+        # constructing it unconditionally made the loop unbuildable without
+        # one - which is why the end-to-end tests passed locally, where a .env
+        # exists, and failed in CI, where none does.
+        self.llm = LLM(backend=backend or GeminiBackend(model=model),
                        ledger=self.ledger, journal=self.journal)
 
         self.max_iterations = max_iterations
