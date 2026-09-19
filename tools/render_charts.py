@@ -108,9 +108,12 @@ def attempts_svg(run, nodes, mode):
                  f'fill="{c["dot"]}" stroke="{c["surface"]}" '
                  f'stroke-width="2"/>')
     if best:
-        bx, by = x(nodes.index(best)), y(best["score"])
+        bi = nodes.index(best)
+        bx, by = x(bi), y(best["score"])
+        # keep the value label clear of the baseline caption in the far corner
+        anchor = "end" if bx > L + pw - 60 else "middle"
         s.append(f'<text x="{round(bx,1)}" y="{round(by-12,1)}" '
-                 f'text-anchor="middle" font-family="{FONT}" font-size="11" '
+                 f'text-anchor="{anchor}" font-family="{FONT}" font-size="11" '
                  f'font-weight="600" fill="{c["ink"]}" '
                  f'style="font-variant-numeric:tabular-nums">'
                  f'{best["score"]:.4f}</text>')

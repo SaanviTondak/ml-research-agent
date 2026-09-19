@@ -1,0 +1,52 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 900 460" width="900" height="460" role="img" aria-label="Validation score per attempt for run final_02">
+<rect width="900" height="460" fill="#fcfcfb"/>
+<text x="62" y="24" font-family="system-ui,-apple-system,'Segoe UI',sans-serif" font-size="15" font-weight="600" fill="#0b0b0b">Validation score per attempt &#8212; final_02</text>
+<text x="62" y="42" font-family="system-ui,-apple-system,'Segoe UI',sans-serif" font-size="12" fill="#52514e">12 of 12 attempts produced a score. Stage shown in the band below.</text>
+<line x1="62" y1="342.0" x2="878" y2="342.0" stroke="#e1e0d9" stroke-width="1"/>
+<text x="54" y="346.0" text-anchor="end" font-family="system-ui,-apple-system,'Segoe UI',sans-serif" font-size="11" fill="#898781" style="font-variant-numeric:tabular-nums">0.45</text>
+<line x1="62" y1="254.7" x2="878" y2="254.7" stroke="#e1e0d9" stroke-width="1"/>
+<text x="54" y="258.7" text-anchor="end" font-family="system-ui,-apple-system,'Segoe UI',sans-serif" font-size="11" fill="#898781" style="font-variant-numeric:tabular-nums">0.50</text>
+<line x1="62" y1="167.5" x2="878" y2="167.5" stroke="#e1e0d9" stroke-width="1"/>
+<text x="54" y="171.5" text-anchor="end" font-family="system-ui,-apple-system,'Segoe UI',sans-serif" font-size="11" fill="#898781" style="font-variant-numeric:tabular-nums">0.55</text>
+<line x1="62" y1="80.2" x2="878" y2="80.2" stroke="#e1e0d9" stroke-width="1"/>
+<text x="54" y="84.2" text-anchor="end" font-family="system-ui,-apple-system,'Segoe UI',sans-serif" font-size="11" fill="#898781" style="font-variant-numeric:tabular-nums">0.60</text>
+<line x1="62" y1="77.4" x2="878" y2="77.4" stroke="#52514e" stroke-width="1"/>
+<text x="878" y="70.4" text-anchor="end" font-family="system-ui,-apple-system,'Segoe UI',sans-serif" font-size="11" font-weight="600" fill="#52514e">FM baseline 0.6016</text>
+<circle cx="96.0" cy="86.8" r="4.5" fill="#2a78d6" stroke="#fcfcfb" stroke-width="2"/>
+<circle cx="164.0" cy="81.2" r="4.5" fill="#2a78d6" stroke="#fcfcfb" stroke-width="2"/>
+<circle cx="232.0" cy="81.9" r="4.5" fill="#2a78d6" stroke="#fcfcfb" stroke-width="2"/>
+<circle cx="300.0" cy="79.7" r="4.5" fill="#2a78d6" stroke="#fcfcfb" stroke-width="2"/>
+<circle cx="368.0" cy="91.6" r="4.5" fill="#2a78d6" stroke="#fcfcfb" stroke-width="2"/>
+<circle cx="436.0" cy="76.3" r="4.5" fill="#2a78d6" stroke="#fcfcfb" stroke-width="2"/>
+<circle cx="504.0" cy="75.4" r="4.5" fill="#2a78d6" stroke="#fcfcfb" stroke-width="2"/>
+<circle cx="572.0" cy="75.6" r="4.5" fill="#2a78d6" stroke="#fcfcfb" stroke-width="2"/>
+<circle cx="640.0" cy="74.6" r="4.5" fill="#2a78d6" stroke="#fcfcfb" stroke-width="2"/>
+<circle cx="708.0" cy="77.0" r="4.5" fill="#2a78d6" stroke="#fcfcfb" stroke-width="2"/>
+<circle cx="776.0" cy="74.9" r="4.5" fill="#2a78d6" stroke="#fcfcfb" stroke-width="2"/>
+<circle cx="844.0" cy="74.4" r="4.5" fill="#2a78d6" stroke="#fcfcfb" stroke-width="2"/>
+<text x="844.0" y="62.4" text-anchor="end" font-family="system-ui,-apple-system,'Segoe UI',sans-serif" font-size="11" font-weight="600" fill="#0b0b0b" style="font-variant-numeric:tabular-nums">0.6033</text>
+<text x="96.0" y="382" text-anchor="middle" font-family="system-ui,-apple-system,'Segoe UI',sans-serif" font-size="10" fill="#898781">0</text>
+<text x="436.0" y="382" text-anchor="middle" font-family="system-ui,-apple-system,'Segoe UI',sans-serif" font-size="10" fill="#898781">5</text>
+<text x="776.0" y="382" text-anchor="middle" font-family="system-ui,-apple-system,'Segoe UI',sans-serif" font-size="10" fill="#898781">10</text>
+<rect x="62.0" y="390" width="66.0" height="9" rx="1.5" fill="#2a78d6"/>
+<rect x="130.0" y="390" width="66.0" height="9" rx="1.5" fill="#eb6834"/>
+<rect x="198.0" y="390" width="66.0" height="9" rx="1.5" fill="#eb6834"/>
+<rect x="266.0" y="390" width="66.0" height="9" rx="1.5" fill="#eb6834"/>
+<rect x="334.0" y="390" width="66.0" height="9" rx="1.5" fill="#eb6834"/>
+<rect x="402.0" y="390" width="66.0" height="9" rx="1.5" fill="#2a78d6"/>
+<rect x="470.0" y="390" width="66.0" height="9" rx="1.5" fill="#eb6834"/>
+<rect x="538.0" y="390" width="66.0" height="9" rx="1.5" fill="#eb6834"/>
+<rect x="606.0" y="390" width="66.0" height="9" rx="1.5" fill="#eb6834"/>
+<rect x="674.0" y="390" width="66.0" height="9" rx="1.5" fill="#eb6834"/>
+<rect x="742.0" y="390" width="66.0" height="9" rx="1.5" fill="#eb6834"/>
+<rect x="810.0" y="390" width="66.0" height="9" rx="1.5" fill="#eb6834"/>
+<text x="470.0" y="415" text-anchor="middle" font-family="system-ui,-apple-system,'Segoe UI',sans-serif" font-size="11" fill="#52514e">attempt</text>
+<rect x="62" y="438" width="10" height="10" rx="2" fill="#2a78d6"/>
+<text x="77" y="447" font-family="system-ui,-apple-system,'Segoe UI',sans-serif" font-size="11" fill="#52514e">draft</text>
+<rect x="123" y="438" width="10" height="10" rx="2" fill="#eb6834"/>
+<text x="138" y="447" font-family="system-ui,-apple-system,'Segoe UI',sans-serif" font-size="11" fill="#52514e">improve</text>
+<rect x="198" y="438" width="10" height="10" rx="2" fill="#1baf7a"/>
+<text x="213" y="447" font-family="system-ui,-apple-system,'Segoe UI',sans-serif" font-size="11" fill="#52514e">debug</text>
+<line x1="262" y1="437" x2="262" y2="449" stroke="#d03b3b" stroke-width="2"/>
+<text x="270" y="447" font-family="system-ui,-apple-system,'Segoe UI',sans-serif" font-size="11" fill="#52514e">failed (no score)</text>
+</svg>
