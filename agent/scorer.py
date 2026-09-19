@@ -20,26 +20,18 @@ error messages can be fed to the agent in English.
 import csv
 import hashlib
 import sys
-from dataclasses import dataclass
 from pathlib import Path
 
 if __package__ in (None, ""):
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from agent.paths import EVALUATE_PY, VISIBLE_DATA, add_starter_to_path
+from agent.task import ContractError, IntegrityError, Score
 
 HEADER = ["row_id", "user_id", "video_id", "score"]
 
 # sha256 of the organizer's pristine evaluate.py, recorded at Phase 1.
 EVALUATE_SHA256 = "ecfde28392eb14fec4f488083251df50624e1af2b86278b962daecfb42d195de"
-
-
-class IntegrityError(Exception):
-    """The official metric implementation has been modified."""
-
-
-class ContractError(Exception):
-    """The candidate's output does not satisfy the submission contract."""
 
 
 def assert_evaluate_untouched():
@@ -116,26 +108,6 @@ def read_scores(path, rows):
     return scores
 
 
-@dataclass
-class Score:
-    gauc: float
-    ndcg5: float
-    primary: float
-    users: int
-    rows: int
-    split: str
-
-    def to_dict(self):
-        return {"GAUC": self.gauc, "nDCG@5": self.ndcg5,
-                "primary": self.primary, "users": self.users,
-                "rows": self.rows, "split": self.split}
-
-    def __str__(self):
-        return (f"GAUC {self.gauc:.4f} | nDCG@5 {self.ndcg5:.4f} | "
-                f"primary {self.primary:.4f}  ({self.rows:,d} rows, "
-                f"{self.users:,d} users, split={self.split})")
-
-
 def score_file(path, split="valid", data_dir=None, allow_test=False):
     """Validate a candidate's output and score it with the official metric."""
     if split == "test" and not allow_test:
@@ -151,5 +123,10 @@ def score_file(path, split="valid", data_dir=None, allow_test=False):
     add_starter_to_path()
     from evaluate import evaluate
     r = evaluate([x[1] for x in rows], [x[6] for x in rows], scores)
-    return Score(gauc=r["GAUC"], ndcg5=r["nDCG@5"], primary=r["primary"],
-                 users=r["users"], rows=r["rows"], split=split)
+    # to_dict() must keep emitting GAUC / nDCG@5 / primary / users / rows /
+    # split: submission/final_result.json records exactly those keys, and
+    # seal/final_score.py writes them into the audit trail.
+    return Score(primary=r["primary"],
+                 metrics={"GAUC": r["GAUC"], "nDCG@5": r["nDCG@5"]},
+                 split=split, rows=r["rows"], groups=r["users"],
+                 group_label="users")

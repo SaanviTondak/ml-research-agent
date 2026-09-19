@@ -63,7 +63,7 @@ def _check_loader_returns_no_test():
 def verify(verbose=True):
     if not VISIBLE_DATA.is_dir():
         raise FirewallBreach(
-            f"{VISIBLE_DATA} does not exist - run `python3 -m agent.firewall`")
+            f"{VISIBLE_DATA} does not exist - run `python3 -m tasks.kuairand.firewall`")
 
     findings = _check_no_test_dates()
     if verbose:

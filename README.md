@@ -90,6 +90,34 @@ tree and asserts the trap cannot recur. Full analysis in
 The submitted result predates those fixes and stands as scored; the tag
 `hackathon-submission` marks the tree it came from.
 
+**A second autonomous run, `final_02`, tested the fix.** It never entered
+`debug` - 12 of 12 attempts scored, the worst lineage spent 3 iterations on one
+parent, and it converged in a quarter of the tokens. Its validation and sealed
+test scores land slightly *below* `final_01`'s, though: the fix demonstrably
+buys search efficiency, not automatically a better model, on a floor of only
+12 attempts. Full numbers, both trees, and a second finding (a gap in the
+seed-verification trigger) in
+[`docs/final_02_results.md`](docs/final_02_results.md).
+
+**And a second defect, underneath the first.** `select_parent()` took a global
+argmax, so `improve` only ever extended the single best node — a new direction
+survived only if it won on its very first scored attempt. `final_02` is the
+proof both ways: node 5 (multi-task supervision plus censored watch-time)
+cleared the threshold by 0.0025, took the incumbency and became the entire rest
+of the run, while the lineage it displaced was abandoned on the spot and never
+touched again. The unit of greed is now a *lineage*: a new root gets three
+scored attempts on its own branch before it has to compete, convergence is
+blocked while an exploration is in budget, and the convergence floor counts
+exploit attempts only so buying an exploration never brings the stopping rule
+closer. Replaying both recorded trees through the new policy changes 20 of
+`final_01`'s 34 selections and **none** of `final_02`'s — the fix is insurance
+against the case where the draft doesn't get lucky, which is the case the
+tests pin. Its honest limit is in
+[`docs/postmortem.md`](docs/postmortem.md#deliberately-not-done): protection is
+root-scoped, so the two DIN-style attempts that lost by 0.0004 and 0.0014 —
+both `improve` nodes, both inside 2σ of a single-seed incumbent — still would
+not have been rescued.
+
 ### What was submitted
 
 Node 4, at validation 0.6042 — **not** node 7, which scored 0.6046. Node 7 had
@@ -120,7 +148,7 @@ flowchart LR
         REAL[("KuaiRand-Pure<br/>full dataset<br/>includes test labels")]
     end
 
-    FW["agent/firewall.py<br/>drop every row dated &gt; 20220428"]
+    FW["tasks/kuairand/firewall.py<br/>drop every row dated &gt; 20220428"]
     VIS[("work/data_visible/<br/>train 1,141,112<br/>valid 124,909<br/><b>test 0 rows</b>")]
     VER["agent/verify_firewall.py<br/>independent re-read<br/>runs before any candidate"]
 
@@ -144,7 +172,7 @@ flowchart LR
     style SEAL fill:#eda100,stroke:#eda100,color:#000
 ```
 
-[`agent/firewall.py`](agent/firewall.py) materialises `work/data_visible/`, a
+[`tasks/kuairand/firewall.py`](tasks/kuairand/firewall.py) materialises `work/data_visible/`, a
 data directory that **physically contains no impression dated after 20220428**,
 the last day of the validation window:
 
@@ -294,7 +322,7 @@ Then, with the dataset in place:
 
 ```bash
 # Place KuaiRand-Pure under kuairand-starter-kit/KuaiRand-Pure/data/
-python3 -m agent.firewall           # build the agent's view of the data
+python3 -m tasks.kuairand.firewall  # build the agent's view of the data
 python3 -m agent.verify_firewall    # prove it contains no test rows
 python3 harness_check.py            # 9 checks end to end (~45 s)
 ```

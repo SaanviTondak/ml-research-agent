@@ -65,12 +65,22 @@ class ExecResult:
     ok: bool                       # exited 0, in time
     returncode: int | None
     timed_out: bool
-    wall_s: float
+    wall_s: float                  # monotonic: the clock the timeout uses
     stdout: str
     stderr: str
     exc_type: str | None = None
     exc_msg: str | None = None
     argv: list = field(default_factory=list)
+    wall_clock_s: float = 0.0
+    """Elapsed time.time() seconds, which on macOS includes host suspend.
+
+    run final_02 reported node 8 at 7141s against a 600s timeout that
+    correctly never fired: communicate(timeout=...) measures monotonic time,
+    which does not advance while the system sleeps. wall_s is now that same
+    monotonic clock, so the timeout and the reported duration agree. This
+    field keeps the wall-clock figure rather than erasing it, so a
+    sleep-contaminated timing stays identifiable after the fact.
+    See docs/interventions.md section Environment events."""
 
     def to_dict(self):
         return asdict(self)
@@ -85,16 +95,25 @@ class ExecResult:
         return f"exit {self.returncode} in {self.wall_s:.1f}s"
 
 
-def run_script(script, args=(), timeout_s=DEFAULT_TIMEOUT_S, cwd=None, env=None):
-    """Run `python3 script *args` under a hard timeout. Never raises."""
+def run_script(script, args=(), timeout_s=DEFAULT_TIMEOUT_S, cwd=None,
+               env=None, extra_path=None):
+    """Run `python3 script *args` under a hard timeout. Never raises.
+
+    `extra_path` is the task's own importable directories - for KuaiRand, the
+    organizer's starter kit, so `import data` / `import evaluate` resolve
+    inside the candidate. Defaults to that for backward compatibility.
+    """
     argv = [sys.executable, "-u", str(script), *map(str, args)]
 
     child_env = dict(os.environ if env is None else env)
     existing = child_env.get("PYTHONPATH", "")
+    prefix = os.pathsep.join(
+        str(p) for p in (extra_path if extra_path is not None else [STARTER]))
     child_env["PYTHONPATH"] = (
-        f"{STARTER}{os.pathsep}{existing}" if existing else str(STARTER))
+        f"{prefix}{os.pathsep}{existing}" if existing else prefix)
 
-    t0 = time.time()
+    t0 = time.monotonic()
+    t0_wall = time.time()
     try:
         proc = subprocess.Popen(
             argv,
@@ -108,7 +127,8 @@ def run_script(script, args=(), timeout_s=DEFAULT_TIMEOUT_S, cwd=None, env=None)
         )
     except OSError as e:
         return ExecResult(ok=False, returncode=None, timed_out=False,
-                          wall_s=time.time() - t0, stdout="",
+                          wall_s=time.monotonic() - t0,
+                          wall_clock_s=time.time() - t0_wall, stdout="",
                           stderr=f"failed to launch: {e}",
                           exc_type=type(e).__name__, exc_msg=str(e),
                           argv=argv)
@@ -125,7 +145,8 @@ def run_script(script, args=(), timeout_s=DEFAULT_TIMEOUT_S, cwd=None, env=None)
             out, err = "", ""
         err = (err or "") + f"\n[executor] killed after {timeout_s}s timeout\n"
 
-    wall = time.time() - t0
+    wall = time.monotonic() - t0
+    wall_clock = time.time() - t0_wall
     rc = proc.returncode
     exc_type, exc_msg = (None, None) if timed_out else _exception_from_traceback(err or "")
 
@@ -134,6 +155,7 @@ def run_script(script, args=(), timeout_s=DEFAULT_TIMEOUT_S, cwd=None, env=None)
         returncode=rc,
         timed_out=timed_out,
         wall_s=wall,
+        wall_clock_s=wall_clock,
         stdout=clip(out or ""),
         stderr=clip(err or ""),
         exc_type=exc_type,

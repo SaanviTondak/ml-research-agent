@@ -152,21 +152,91 @@ test_search_escapes_after_the_repair_budget    PASSED
 test_a_successful_repair_clears_the_debug_state PASSED
 ```
 
-### Not done
+### Since fixed
 
-**Charge the time cap in monotonic time.** `elapsed_h` and `ExecResult.wall_s`
-both read `time.time()`, so a host that sleeps mid-run bills the suspended
-interval against the 6 h cap and against individual candidates. Run `final_02`
-reported a candidate at 7141s against a 600s timeout that correctly never fired,
-because `communicate(timeout=...)` measures in `time.monotonic()` — which does
-not advance during sleep on macOS. The cap should use the same clock as the
-timeout, and the journal should carry awake-time alongside wall-clock. See
-`interventions.md` § Environment events.
+Both items previously listed here as not done are now implemented, along with
+three further defects that `final_02` exposed. All are covered by
+[`tests/test_exploration_policy.py`](../tests/test_exploration_policy.py) and
+[`tests/test_budget.py`](../tests/test_budget.py); the eight tests guarding the
+original trap pass unmodified.
 
-**Never let a repair regress below the incumbent.** A debug attempt scoring
-worse than the best node is still recorded as a normal result. It cannot
-corrupt selection — `best()` takes the max — so this is budget hygiene rather
-than a correctness problem, and it is left for `final_02`.
+**5. The cap and the candidate timeout now read the same clock.** `elapsed_h()`
+measured `time.time()` while `communicate(timeout=...)` measures
+`time.monotonic()`, so `final_02` billed ~2 h of suspended host against the 6 h
+cap and reported a candidate at 7141 s against a 600 s timeout that correctly
+never fired. The cap is now charged in monotonic time, `wall_h` and
+`suspended_h` are journalled beside it, and `ExecResult.wall_clock_s` keeps the
+wall-clock figure rather than erasing it. Awake time also accumulates across
+resumes now, via `budget.json` — `final_01` was resumed three times and each
+segment had been getting a fresh six hours.
+
+**6. Verification anchors on the best *verified* score.** The trigger compared
+against the running best regardless of how many seeds confirmed it, so
+`final_02`'s nodes 6–11 — six gains of +0.0005, −0.0001, +0.0005, −0.0014,
+−0.0002, +0.0001 — compounded six steps past solid ground without one of them
+tripping a check. The anchor is now `best_verified_score()`, the **max** of
+confirmed scores rather than the latest, and the threshold is its own constant
+(`VERIFY_MARGIN`, one seed σ) instead of borrowing the organizers' convergence
+`EPS`: "is the search finished?" and "is this gain worth two more seed runs?"
+are different questions. `finalise()` also verifies the shipped node if it was
+never confirmed, which is the manual step `docs/final_02_results.md` records
+someone doing by hand.
+
+**7. Greed is scoped to a lineage, not the whole journal.** This is the defect
+under the first one. `select_parent()` returned the global argmax, so `improve`
+only ever extended the single best node and a new lineage survived only if it
+won on its first scored attempt. `final_02` node 5 — multi-task supervision plus
+censored watch-time — cleared `EPS` on seed 0 by 0.0025, took the incumbency,
+and became the whole rest of the run; had it scored a little lower it would have
+been orphaned permanently, and the node-0 lineage was in fact abandoned the
+moment it lost. A new root now gets `PROTECTED_SCORED_ATTEMPTS = 3` scored
+attempts on its own branch before competing globally, bounded by
+`PROTECTION_MAX_NODES` and written off immediately if it is more than
+`PROTECTION_WRITE_OFF` behind. Convergence is blocked while an exploration is in
+budget, and its floor counts exploit attempts only — so buying an exploration
+never brings the stopping rule closer. `MIN_SCORED_BEFORE_CONVERGENCE` stays 12.
+
+**8. The draft schedule was preempted, and restarted on every resume.**
+`iteration % 7 == 6` sat below the debug branch, so a due draft was silently
+swallowed by a repair chain: `final_01`'s iterations 13, 20 and 27 all came due
+and all three were eaten, leaving one alternative root opened in thirty
+iterations. The counter was also the loop's, which restarts at 1 on resume. The
+cadence is now keyed to the journal (`nodes_since_last_root()`), checked before
+the debug branch, and gated on having budget left to develop what it opens.
+
+**9. `N_DRAFTS = 3` had never taken effect.** The gate was
+`len(self.state.good()) == 0`, which ends the phase the moment the first draft
+scores — so both recorded runs opened exactly one initial root while the loop's
+module docstring documented three. It now gates on `len(roots())`.
+
+### Deliberately not done
+
+**A broken draft root still gets no repair budget.** `final_01`'s node 9 was a
+draft that crashed, and it received zero repairs and zero children in the 24
+iterations that followed, because `select_parent()` only searched children of
+the best node and a root is never one. The obvious fix is to let protection
+cover it — but a lineage with no score has produced no measurement to protect,
+and giving it priority over a fresh breakage on the incumbent branch inverts
+the two. Protection is therefore earned by evidence: a lineage must have scored
+at least once. A crashed draft is replaced by the draft schedule (defect 8),
+not repaired. `test_a_broken_draft_root_does_not_preempt_an_in_flight_repair`
+pins the decision.
+
+**Protection is root-scoped, so a losing `improve` node is still orphaned.**
+This is the honest limit of the fix. `final_02`'s two DIN-style attempts —
+node 2, which lost by 0.0004, and node 9, which lost by 0.0014, both inside 2σ
+of a *single-seed* incumbent — were `improve` nodes inside an existing lineage,
+not new roots, so nothing above would have rescued them. What the fix does is
+make the *root* the unit that survives losing narrowly, and route structural
+exploration toward roots: drafts now actually happen, they carry a rollup of
+which directions each lineage has already spent, and a root that lands inside
+the noise gets three attempts to prove itself. Extending a second chance to
+near-miss `improve` nodes is the natural next step and is not attempted here.
+
+**Never let a repair regress below the incumbent.** Unchanged from before: a
+debug attempt scoring worse than the best node is still recorded normally. It
+cannot corrupt selection, since `best()` takes the max, so this stays budget
+hygiene rather than a correctness problem.
 
 ## What this run got right
 

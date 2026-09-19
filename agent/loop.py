@@ -38,6 +38,7 @@ is a graded deliverable and must not be reconstructed afterwards.
 """
 import argparse
 import difflib
+import json
 import sys
 import time
 from pathlib import Path
@@ -45,23 +46,23 @@ from pathlib import Path
 if __package__ in (None, ""):
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from agent import prompts, scorer
 from agent.executor import run_script
 from agent.guard import (assert_clean, assert_parses, GuardRejection,
                          SyntaxRejection)
 from agent.journal import Journal, new_run_dir, render_markdown
 from agent.llm import (LLM, GeminiBackend, TokenLedger, LLMError,
                        QuotaExhausted, extract_code, DEFAULT_MODEL)
-from agent.paths import VISIBLE_DATA
-from agent.state import (Node, SolutionJournal, EPS, N_CONVERGE,
-                         MAX_DEBUG_ATTEMPTS)
-from agent.verify_firewall import verify, FirewallBreach
+from agent.calibrate import calibrate, write as write_calibration
+from agent.state import Node, PolicyConfig, SolutionJournal
+from agent.task import ContractError, IntegrityError
+from agent.verify_firewall import FirewallBreach
 
 MAX_ITERATIONS = 50
 MAX_HOURS = 6.0
 CANDIDATE_TIMEOUT_S = 600      # 10 min; the reference model needs ~30 s
-N_DRAFTS = 3                   # initial independent attempts before improving
-VERIFY_SEEDS = (1, 2)          # re-run seeds for a candidate that beats best
+N_DRAFTS = 3                   # initial independent roots before improving
+VERIFY_SEEDS = (1, 2)          # re-run seeds for a candidate worth confirming
+DRAFT_EVERY = 6                # attempts between opening a new root
 
 
 class AgentLoop:
@@ -69,13 +70,21 @@ class AgentLoop:
                  max_iterations=MAX_ITERATIONS, max_hours=MAX_HOURS,
                  candidate_timeout_s=CANDIDATE_TIMEOUT_S,
                  n_drafts=N_DRAFTS, verify_seeds=VERIFY_SEEDS,
-                 data_dir=None, skip_eda=False):
+                 data_dir=None, skip_eda=False, task=None, calibrate_policy=True):
+        # Defaulted rather than required: the documented CLI, harness_check.py
+        # and tests/test_budget.py all construct a loop without naming a task,
+        # and a required argument would break them for no benefit.
+        if task is None:
+            from tasks.kuairand.task import KuaiRandTask
+            task = KuaiRandTask()
+        self.task = task
         self.dir = Path(run_dir or new_run_dir(prefix="agent"))
         (self.dir / "nodes").mkdir(parents=True, exist_ok=True)
         (self.dir / "artifacts").mkdir(parents=True, exist_ok=True)
 
         self.journal = Journal(self.dir / "journal.jsonl")
-        self.state = SolutionJournal(self.dir / "state.json")
+        self.policy = PolicyConfig()
+        self.state = SolutionJournal(self.dir / "state.json", policy=self.policy)
         self.ledger = TokenLedger(self.dir / "tokens.json")
         self.llm = LLM(backend=GeminiBackend(model=model),
                        ledger=self.ledger, journal=self.journal)
@@ -85,20 +94,65 @@ class AgentLoop:
         self.candidate_timeout_s = candidate_timeout_s
         self.n_drafts = n_drafts
         self.verify_seeds = list(verify_seeds)
-        self.data_dir = Path(data_dir or VISIBLE_DATA)
+        self.data_dir = Path(data_dir or task.visible_data_dir())
         self.skip_eda = skip_eda
+        self.calibrate_policy = calibrate_policy
+        self.calibration = None
 
         self.eda = ""
-        self.t0 = time.time()
+        # Two clocks. The cap is charged in monotonic time because that is the
+        # clock subprocess.communicate(timeout=...) uses in executor.py - so a
+        # candidate's reported duration and its timeout can no longer disagree.
+        # time.time() is kept alongside it so host suspend stays visible
+        # instead of being silently absorbed. See docs/postmortem.md.
+        self.t0 = time.monotonic()
+        self.t0_wall = time.time()
+        self.budget_path = self.dir / "budget.json"
+        self.prior_awake_s = self._load_prior_awake()
         self.interventions = 0        # stays 0; a human touching this is one
         self._announced_abandoned = set()   # log each give-up once
+        self._protected_seen = set()        # log each exploration once
+        self._retired_seen = set()
 
     # ------------------------------------------------------------ utilities
     def log(self, event, **kw):
         return self.journal.append(event, **kw)
 
+    def _load_prior_awake(self):
+        """Awake seconds already spent in this run directory.
+
+        self.t0 restarts on every resume, so without this the 6 h cap is
+        charged per *segment*: run final_01 was resumed three times and each
+        segment got a fresh six hours. The cap is meant to bound the run, so
+        awake time accumulates across resumes.
+        """
+        try:
+            return float(json.loads(self.budget_path.read_text())["awake_s"])
+        except (OSError, ValueError, KeyError, TypeError):
+            return 0.0
+
+    def _save_budget(self):
+        self.budget_path.write_text(json.dumps({
+            "awake_s": round(self.awake_s(), 3),
+            "wall_s": round(time.time() - self.t0_wall, 3),
+            "segment_started": time.strftime("%Y-%m-%dT%H:%M:%S"),
+        }) + "\n")
+
+    def awake_s(self):
+        """Seconds of running time, resumes included, host suspend excluded."""
+        return self.prior_awake_s + (time.monotonic() - self.t0)
+
     def elapsed_h(self):
-        return (time.time() - self.t0) / 3600.0
+        """Awake hours. This is what the cap is charged against."""
+        return self.awake_s() / 3600.0
+
+    def wall_h(self):
+        """Hours on the wall for this segment, host suspend included."""
+        return (time.time() - self.t0_wall) / 3600.0
+
+    def suspended_h(self):
+        """Wall time this segment that the host spent asleep."""
+        return max(0.0, self.wall_h() - (time.monotonic() - self.t0) / 3600.0)
 
     def say(self, msg):
         print(f"[{self.elapsed_h()*60:6.1f}m] {msg}", flush=True)
@@ -106,20 +160,55 @@ class AgentLoop:
     # ------------------------------------------------------------ preflight
     def preflight(self):
         self.say("preflight ...")
-        sha = scorer.assert_evaluate_untouched()
-        counts = verify(verbose=False)
+        sha = self.task.integrity_check()
+        counts = self.task.verify_isolation(verbose=False)
         if counts["test"] != 0:
             raise FirewallBreach("visible directory exposes test rows")
-        self.log("preflight", status="ok", evaluate_sha256=sha,
+        self.log("preflight", status="ok", task=self.task.name,
+                 evaluate_sha256=sha,
                  visible_counts=counts, model=self.llm.model,
                  data_dir=str(self.data_dir),
                  caps={"iterations": self.max_iterations,
                        "hours": self.max_hours,
                        "candidate_timeout_s": self.candidate_timeout_s},
-                 convergence={"eps": EPS, "N": N_CONVERGE})
+                 convergence={"eps": self.policy.eps,
+                              "N": self.policy.n_converge})
         self.say(f"  evaluate.py {sha[:12]}  visible train/valid/test="
                  f"{counts['train']:,d}/{counts['valid']:,d}/{counts['test']}")
         self.say(f"  model {self.llm.model}")
+        self.run_calibration()
+
+    def run_calibration(self):
+        """Measure the task's noise floor and install thresholds from it.
+
+        Without this the agent carries KuaiRand's numbers everywhere: a task
+        whose sigma is 0.05 would verify on every node and never converge,
+        because VERIFY_MARGIN = 0.0008 *is* KuaiRand's seed sigma. Skipping is
+        always safe - the declared defaults stay in force and the run log says
+        so.
+        """
+        if not self.calibrate_policy:
+            return
+        cal = calibrate(self.task, self.dir, max_hours=self.max_hours,
+                        timeout_s=self.candidate_timeout_s, log=self.say)
+        self.calibration = cal
+        write_calibration(cal, self.dir)
+        record = cal.to_dict()
+        # `status` is the journal's own field name; the calibration's own
+        # status travels as calibration_status rather than colliding with it.
+        record["calibration_status"] = record.pop("status")
+        self.log("calibration",
+                 status=("ok" if cal.status == "ok" else "info"), **record)
+        if cal.status != "ok":
+            self.say(f"  {cal.summary()}; keeping declared thresholds")
+            return
+        self.policy = PolicyConfig.from_calibration(cal, base=self.policy)
+        self.state.policy = self.policy
+        if not self.policy.verification_useful:
+            self.verify_seeds = []
+            self.say("  task is deterministic; seed verification disabled")
+        self.log("policy", status="info", **self.policy.to_dict())
+        self.say(f"  {cal.summary()}")
 
     # ----------------------------------------------------------------- EDA
     def run_eda(self):
@@ -128,7 +217,8 @@ class AgentLoop:
         self.say("exploratory analysis (agent-written) ...")
         self.log("explore_start", status="info")
         try:
-            resp = self.llm.complete(prompts.SYSTEM, prompts.explore_prompt(),
+            resp = self.llm.complete(self.task.system_prompt(),
+                                     self.task.explore_prompt(),
                                      temperature=0.6)
         except LLMError as e:
             self.log("explore_failed", status="error", error=str(e)[:500])
@@ -144,12 +234,13 @@ class AgentLoop:
         path = self.dir / "nodes" / "eda.py"
         path.write_text(code)
         r = run_script(path, ["--data_dir", self.data_dir],
-                       timeout_s=self.candidate_timeout_s)
+                       timeout_s=self.candidate_timeout_s,
+                       extra_path=self.task.extra_sys_path())
         if r.ok:
             self.eda = r.stdout
             (self.dir / "eda_report.txt").write_text(r.stdout)
             self.log("explore_done", status="ok", wall_s=round(r.wall_s, 1),
-                     hypothesis=prompts.extract_hypothesis(resp.text),
+                     hypothesis=self.task.extract_hypothesis(resp.text),
                      detail=r.stdout[-2000:])
             self.say(f"  EDA ok in {r.wall_s:.0f}s, "
                      f"{len(r.stdout.splitlines())} lines of findings")
@@ -160,57 +251,141 @@ class AgentLoop:
             self.say(f"  EDA failed ({r.summary()}); continuing without it")
 
     # ------------------------------------------------------------- policy
+    def draft_is_due(self):
+        """Should this iteration open a new root?
+
+        Three things were wrong with the old `iteration % 7 == 6` test. It sat
+        below the debug branch, so a due draft was silently swallowed by a
+        repair chain - final_01's iterations 13, 20 and 27 all came due and
+        all three were eaten, leaving one alternative root opened in thirty
+        iterations. It was keyed to the loop counter, which restarts at 1 on
+        every resume, so the cadence restarted three times in that same run.
+        And it could open an exploration with no budget left to develop it.
+        """
+        if self.state.protected_root() is not None:
+            return False              # one exploration at a time
+        if self.state.nodes_since_last_root() < DRAFT_EVERY:
+            return False
+        remaining = self.max_iterations - len(self.state.nodes)
+        return remaining > self.policy.protection_max_nodes
+
+    def announce_abandoned(self):
+        for dead in self.state.abandoned():
+            if dead.id in self._announced_abandoned:
+                continue
+            self._announced_abandoned.add(dead.id)
+            self.log("node_abandoned", node_id=dead.id, status="info",
+                     attempts=self.state.repair_attempts(dead.id),
+                     detail=(dead.failure_reason or "")[:300])
+            self.say(f"  giving up on #{dead.id} after "
+                     f"{self.state.repair_attempts(dead.id)} repairs")
+
+    def note_protection(self):
+        """Log a lineage entering or leaving its development budget.
+
+        This is the payoff ledger: at the end of a run it says how many
+        explorations were bought and what each one returned. A policy that
+        cannot be read off the run log is not auditable, and the run log is a
+        graded deliverable.
+        """
+        root_id, reason = self.state.protection_status()
+        if root_id is None:
+            return
+        best = self.state.best()
+        lin = self.state.lineage(root_id)
+        scored = [n for n in lin if not n.is_buggy and n.score is not None]
+        lin_best = max((n.score for n in scored), default=None)
+        if reason == "active":
+            if root_id not in self._protected_seen:
+                self._protected_seen.add(root_id)
+                self.log("lineage_protected", root_id=root_id, status="info",
+                         budget_scored=self.policy.protected_scored_attempts,
+                         budget_nodes=self.policy.protection_max_nodes,
+                         incumbent=best.score if best else None,
+                         lineage_best=lin_best)
+                self.say(f"  exploring from root #{root_id}: protected for "
+                         f"{self.policy.protected_scored_attempts} scored "
+                         f"attempts")
+        elif root_id in self._protected_seen and root_id not in self._retired_seen:
+            self._retired_seen.add(root_id)
+            delta = (lin_best - best.score) if (lin_best is not None and best) else None
+            self.log("lineage_retired", root_id=root_id, status="info",
+                     reason=reason, best_in_lineage=lin_best,
+                     delta_vs_incumbent=None if delta is None else round(delta, 5),
+                     nodes_spent=len(lin))
+            self.say(f"  root #{root_id} retired ({reason})"
+                     + (f", best {lin_best:.4f}" if lin_best is not None else ""))
+
     def choose_action(self, iteration):
         """Return (stage, parent_node_or_None)."""
-        if len(self.state.good()) == 0 and len(self.state.nodes) < self.n_drafts:
+        self.announce_abandoned()
+        self.note_protection()
+
+        # Open the first N_DRAFTS roots outright. The old test was
+        # `len(self.state.good()) == 0`, which ended the phase the moment the
+        # first draft scored - so N_DRAFTS never took effect and both recorded
+        # runs opened exactly one initial root.
+        if len(self.state.roots()) < self.n_drafts:
             return "draft", None
+
         parent = self.state.select_parent()
         if parent is None:
             return "draft", None
-        for dead in self.state.abandoned():
-            if dead.id not in self._announced_abandoned:
-                self._announced_abandoned.add(dead.id)
-                self.log("node_abandoned", node_id=dead.id, status="info",
-                         attempts=self.state.repair_attempts(dead.id),
-                         detail=(dead.failure_reason or "")[:300])
-                self.say(f"  giving up on #{dead.id} after "
-                         f"{self.state.repair_attempts(dead.id)} repairs; "
-                         f"back to the best working solution")
+        # Checked before the debug branch, so a repair chain cannot eat it.
+        if self.draft_is_due():
+            return "draft", None
         if parent.is_buggy:
             return "debug", parent
-        # Periodically branch out so the search does not collapse onto one line.
-        if iteration % 7 == 6:
-            return "draft", None
         return "improve", parent
 
     def build_prompt(self, stage, parent):
         summary = self.state.summary()
         if stage == "draft":
-            return prompts.draft_prompt(summary, self.eda,
-                                        n_existing=len(self.state.nodes))
+            return self.task.draft_prompt(
+                summary, self.eda, n_existing=len(self.state.nodes),
+                lineages=self.state.lineage_rollup())
         if stage == "debug":
             # Tell the model how much repair budget is left, so a last attempt
             # reaches for the smallest fix rather than the most ambitious one.
-            return prompts.debug_prompt(
+            return self.task.debug_prompt(
                 parent, summary,
                 attempt=self.state.repair_attempts(parent.id) + 1,
-                max_attempts=MAX_DEBUG_ATTEMPTS)
-        return prompts.improve_prompt(parent, summary, self.eda)
+                max_attempts=self.policy.max_debug_attempts)
+        return self.task.improve_prompt(parent, summary, self.eda)
 
     # -------------------------------------------------------- one iteration
+    def scope_for(self, stage, parent):
+        """Label this attempt exploit or explore, at insert time.
+
+        Recorded rather than derived: the retirement test depends on an
+        incumbent that moves, so a scope recomputed later would not match what
+        the search actually did. The convergence floor counts exploit nodes,
+        so this label has to be stable.
+        """
+        if stage == "draft" and len(self.state.roots()) >= self.n_drafts:
+            return "explore", None            # a deliberate exploration root
+        root_id = self.state.protected_root()
+        if (root_id is not None and parent is not None
+                and self.state.root_of(parent.id) == root_id):
+            return "explore", root_id
+        return "exploit", None
+
     def iterate(self, iteration):
         stage, parent = self.choose_action(iteration)
         node_id = self.state.next_id()
+        scope, protected_root = self.scope_for(stage, parent)
         self.say(f"iter {iteration:2d} | {stage}"
                  + (f" from #{parent.id}" if parent else "")
                  + f" -> node #{node_id}")
         self.log("iteration_start", iteration=iteration, node_id=node_id,
                  stage=stage, parent_id=parent.id if parent else None,
-                 best_so_far=self.state.best_score(), status="info")
+                 scope=scope, protected_root=protected_root,
+                 best_so_far=self.state.best_score(),
+                 best_verified=self.state.best_verified_score(), status="info")
 
         # --- ask the model -------------------------------------------------
         try:
-            resp = self.llm.complete(prompts.SYSTEM,
+            resp = self.llm.complete(self.task.system_prompt(),
                                      self.build_prompt(stage, parent),
                                      temperature=0.8 if stage == "draft" else 0.5)
         except QuotaExhausted:
@@ -221,11 +396,14 @@ class AgentLoop:
             self.say(f"  LLM call failed: {str(e)[:120]}")
             return None
 
-        hypothesis = prompts.extract_hypothesis(resp.text)
+        hypothesis = self.task.extract_hypothesis(resp.text)
         code = extract_code(resp.text)
         node = Node(id=node_id, stage=stage, hypothesis=hypothesis,
                     code=code or "", parent_id=parent.id if parent else None,
-                    created_at=time.strftime("%Y-%m-%dT%H:%M:%S"))
+                    created_at=time.strftime("%Y-%m-%dT%H:%M:%S"),
+                    scope=scope,
+                    protected_root=(node_id if scope == "explore"
+                                    and parent is None else protected_root))
         self.say(f"  hypothesis: {hypothesis[:100]}")
 
         if not code:
@@ -274,7 +452,7 @@ class AgentLoop:
 
         # --- guard: static check before anything executes ------------------
         try:
-            warnings = assert_clean(code)
+            warnings = assert_clean(code, patterns=self.task.guard_patterns())
             if warnings:
                 self.log("guard_warning", node_id=node_id, status="info",
                          detail="; ".join(f"line {ln}: {why}"
@@ -288,14 +466,16 @@ class AgentLoop:
 
         # --- run it --------------------------------------------------------
         out = self.dir / "artifacts" / f"scores_valid_{node_id:03d}.csv"
-        r = run_script(path, ["--data_dir", self.data_dir, "--split", "valid",
-                              "--out", out, "--seed", 0],
-                       timeout_s=self.candidate_timeout_s)
+        r = run_script(path,
+                       self.task.candidate_argv(self.data_dir, "valid", out, 0),
+                       timeout_s=self.candidate_timeout_s,
+                       extra_path=self.task.extra_sys_path())
         node.exec_ok = r.ok
         node.exec_summary = r.summary()
         node.stdout_tail = r.stdout
         node.stderr_tail = r.stderr
         node.wall_s = r.wall_s
+        node.wall_clock_s = r.wall_clock_s
 
         if not r.ok:
             node.failure_reason = (
@@ -308,21 +488,32 @@ class AgentLoop:
 
         # --- score it ------------------------------------------------------
         try:
-            s = scorer.score_file(out, split="valid", data_dir=self.data_dir)
-        except (scorer.ContractError, scorer.IntegrityError) as e:
+            s = self.task.validate_and_score(out, split="valid",
+                                             data_dir=self.data_dir)
+        except (ContractError, IntegrityError) as e:
             node.failure_reason = f"The output failed validation. {e}"
             self.say(f"  contract violation: {str(e).splitlines()[0][:100]}")
             return self.finish_node(node, resp)
 
-        node.seed_scores = {0: s.primary}
+        # Oriented once, here at the boundary. Everything in agent/state.py
+        # compares in the maximise direction, so a minimise task is handled by
+        # storing -score rather than by threading a sign through six separate
+        # comparisons - one of which would eventually be missed.
+        node.sign = self.task.sign
+        node.seed_scores = {0: self.task.sign * s.primary}
         node.metrics = s.to_dict()
         node.is_buggy = False
-        self.say(f"  seed 0: primary {s.primary:.4f} "
-                 f"(GAUC {s.gauc:.4f}, nDCG@5 {s.ndcg5:.4f}) in {r.wall_s:.0f}s")
+        detail = ", ".join(f"{k} {v:.4f}" for k, v in s.metrics.items())
+        self.say(f"  seed 0: primary {s.primary:.4f}"
+                 + (f" ({detail})" if detail else "")
+                 + f" in {r.wall_s:.0f}s")
 
         # --- multi-seed verification before promotion ----------------------
-        best = self.state.best_score()
-        if best is None or s.primary > best + EPS:
+        # Anchored on the best *verified* score, not on the running best. Six
+        # consecutive sub-EPS gains in final_02 compounded past the last
+        # confirmed node without any of them tripping the old check.
+        if (self.verify_seeds
+                and self.state.needs_verification(self.task.sign * s.primary)):
             self.verify_across_seeds(node, path)
 
         return self.finish_node(node, resp)
@@ -336,30 +527,56 @@ class AgentLoop:
                  status="info")
         for seed in self.verify_seeds:
             out = self.dir / "artifacts" / f"scores_valid_{node.id:03d}_s{seed}.csv"
-            r = run_script(path, ["--data_dir", self.data_dir, "--split", "valid",
-                                  "--out", out, "--seed", seed],
-                           timeout_s=self.candidate_timeout_s)
+            r = run_script(path,
+                           self.task.candidate_argv(self.data_dir, "valid",
+                                                    out, seed),
+                           timeout_s=self.candidate_timeout_s,
+                           extra_path=self.task.extra_sys_path())
             if not r.ok:
                 self.log("seed_verification_failed", node_id=node.id, seed=seed,
                          status="error", error=r.summary())
                 self.say(f"    seed {seed}: FAILED ({r.summary()})")
                 continue
             try:
-                s = scorer.score_file(out, split="valid", data_dir=self.data_dir)
-            except (scorer.ContractError, scorer.IntegrityError) as e:
+                s = self.task.validate_and_score(out, split="valid",
+                                             data_dir=self.data_dir)
+            except (ContractError, IntegrityError) as e:
                 self.log("seed_verification_failed", node_id=node.id, seed=seed,
                          status="error", error=str(e)[:300])
                 continue
-            node.seed_scores[seed] = s.primary
+            node.seed_scores[seed] = self.task.sign * s.primary
             self.say(f"    seed {seed}: {s.primary:.4f}")
 
         std = node.seed_std
         self.log("seed_verification_done", node_id=node.id,
                  seed_scores=node.seed_scores, mean=node.score,
                  std=std, status="ok")
-        self.say(f"  verified mean {node.score:.4f}"
+        self.say(f"  verified mean {node.native_score:.4f}"
                  + (f" +/- {std:.4f}" if std else "")
                  + f" over {node.n_seeds} seeds")
+
+    def verify_shipped_node(self):
+        """Confirm the node about to be shipped across seeds, if it never was.
+
+        final_02 converged on a node that had only ever been run on seed 0;
+        checking it was a manual step after the run. One extra two-seed run at
+        the end makes that the agent's own behaviour. best() is left alone -
+        the rule is to ship the validation-best checkpoint.
+        """
+        best = self.state.best()
+        if best is None or best.n_seeds > 1:
+            return
+        path = self.dir / "nodes" / f"node_{best.id:03d}.py"
+        if not path.exists():
+            return
+        self.say(f"  shipped node #{best.id} was never seed-verified; "
+                 f"confirming before reporting")
+        before = best.score
+        self.verify_across_seeds(best, path)
+        self.state.save()
+        self.log("final_verification", node_id=best.id,
+                 seed0=before, seed_scores=best.seed_scores,
+                 mean=best.score, std=best.seed_std, status="ok")
 
     def finish_node(self, node, resp=None):
         prev_best = self.state.best_score()
@@ -378,8 +595,9 @@ class AgentLoop:
                  code_diff_lines=len((diff or "").splitlines()))
         new_best = self.state.best_score()
         if new_best is not None and (prev_best is None or new_best > prev_best):
-            self.say(f"  NEW BEST {new_best:.4f}"
-                     + (f" (was {prev_best:.4f})" if prev_best else ""))
+            sign = getattr(self.task, "sign", 1.0)
+            self.say(f"  NEW BEST {sign * new_best:.4f}"
+                     + (f" (was {sign * prev_best:.4f})" if prev_best else ""))
             self.log("new_best", node_id=node.id, primary=new_best,
                      previous=prev_best, status="ok")
         return node
@@ -410,6 +628,7 @@ class AgentLoop:
                 break
             try:
                 self.iterate(iteration)
+                self._save_budget()
             except QuotaExhausted as e:
                 stop = "API quota exhausted"
                 self.log("quota_exhausted", status="error", error=str(e)[:500])
@@ -428,7 +647,8 @@ class AgentLoop:
                 continue
 
             if self.state.has_converged():
-                stop = f"converged (eps={EPS}, N={N_CONVERGE})"
+                stop = (f"converged (eps={self.policy.eps:g}, "
+                        f"N={self.policy.n_converge})")
                 self.log("converged", status="ok", iteration=iteration,
                          best=self.state.best_score())
                 break
@@ -436,13 +656,25 @@ class AgentLoop:
         return self.finalise(stop)
 
     def finalise(self, stop_reason):
+        self.verify_shipped_node()
         best = self.state.best()
         self.log("run_end", status="ok", stop_reason=stop_reason,
                  iterations=len(self.state.nodes),
                  best_node=best.id if best else None,
                  best_primary=best.score if best else None,
                  elapsed_h=round(self.elapsed_h(), 2),
+                 wall_h=round(self.wall_h(), 2),
+                 suspended_h=round(self.suspended_h(), 2),
                  tokens=self.ledger.total.to_dict(),
+                 roots_opened=len(self.state.roots()),
+                 windows_protected=len(self._protected_seen),
+                 windows_that_won=sum(
+                     1 for r in self._protected_seen
+                     if best is not None and self.state.root_of(best.id) == r),
+                 scored_exploit=len([n for n in self.state.good()
+                                     if n.scope == "exploit"]),
+                 scored_explore=len([n for n in self.state.good()
+                                     if n.scope == "explore"]),
                  interventions=self.interventions)
         (self.dir / "run_log.md").write_text(
             render_markdown(self.journal.read(),
@@ -454,13 +686,22 @@ class AgentLoop:
               f"({len(self.state.good())} scored, {len(self.state.buggy())} failed)")
         if best:
             print(f"best: node #{best.id} ({best.stage}) "
-                  f"primary {best.score:.4f} over {best.n_seeds} seed(s)")
-            print(f"      baseline 0.6016 valid -> delta {best.score - 0.6016:+.4f}")
+                  f"primary {best.native_score:.4f} over {best.n_seeds} seed(s)")
+            ref = getattr(self.calibration, "seed_scores", None)
+            if ref:
+                base = sum(ref) / len(ref)
+                delta = (best.native_score - base) * self.task.sign
+                print(f"      reference {base:.4f} -> delta {delta:+.4f} "
+                      f"({'better' if delta > 0 else 'worse'})")
             print(f"      {self.dir/'nodes'/f'node_{best.id:03d}.py'}")
             print(f"      hypothesis: {best.hypothesis[:150]}")
         else:
             print("best: none - no candidate scored")
-        print(f"elapsed: {self.elapsed_h():.2f} h    tokens: {self.ledger.summary()}")
+        susp = self.suspended_h()
+        print(f"elapsed: {self.elapsed_h():.2f} h awake"
+              + (f"  ({self.wall_h():.2f} h wall, {susp:.2f} h suspended)"
+                 if susp >= 0.01 else "")
+              + f"    tokens: {self.ledger.summary()}")
         print(f"run log: {self.dir/'run_log.md'}")
         return best
 

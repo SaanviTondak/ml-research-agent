@@ -84,6 +84,30 @@ def new_run_dir(root=None, prefix="run"):
 _ICON = {"ok": "OK", "error": "ERR", "timeout": "TIMEOUT", "info": "-"}
 
 
+def _metric_table(score):
+    """One markdown row of whatever metrics the task reported.
+
+    This used to hard-code GAUC and nDCG@5. It reads the score dict instead,
+    so a task with different metrics renders correctly and an old journal
+    still renders identically - the non-metric keys are the fixed ones every
+    Score carries.
+    """
+    if not isinstance(score, dict):
+        return None
+    skip = {"primary", "rows", "split", "users", "groups"}
+    names = [k for k, v in score.items()
+             if k not in skip and isinstance(v, (int, float))]
+    if "primary" in score:
+        names.append("primary")
+    if not names:
+        return None
+    head = "| " + " | ".join(names) + " |"
+    rule = "|" + "---|" * len(names)
+    cells = [(f"**{score[n]:.4f}**" if n == "primary" else f"{score[n]:.4f}")
+             for n in names]
+    return f"\n{head}\n{rule}\n| " + " | ".join(cells) + " |"
+
+
 def render_markdown(records, title="Run log"):
     """Human-readable log for the submission packet."""
     lines = [f"# {title}", ""]
@@ -101,12 +125,9 @@ def render_markdown(records, title="Run log"):
             if r.get(key):
                 lines.append(f"\n{r[key]}")
         if r.get("score"):
-            s = r["score"]
-            lines.append(
-                f"\n| GAUC | nDCG@5 | primary |\n|---|---|---|\n"
-                f"| {s.get('GAUC', float('nan')):.4f} "
-                f"| {s.get('nDCG@5', float('nan')):.4f} "
-                f"| **{s.get('primary', float('nan')):.4f}** |")
+            table = _metric_table(r["score"])
+            if table:
+                lines.append(table)
         if r.get("error"):
             lines.append(f"\n```\n{r['error']}\n```")
         skip = {"seq", "ts", "run_id", "event", "status", "score", "error",

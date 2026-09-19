@@ -117,14 +117,20 @@ def _scan(code, patterns):
     return findings
 
 
-def check_code(code):
-    """Return (rejections, warnings). Empty rejections = safe to execute."""
-    return _scan(code, FORBIDDEN_PATTERNS), _scan(code, SUSPICIOUS_PATTERNS)
+def check_code(code, patterns=None):
+    """Return (rejections, warnings). Empty rejections = safe to execute.
+
+    `patterns` is the task's (forbidden, suspicious) pair. It defaults to the
+    KuaiRand tables below so every existing caller - and every existing test -
+    keeps its behaviour unchanged.
+    """
+    forbidden, suspicious = patterns or (FORBIDDEN_PATTERNS, SUSPICIOUS_PATTERNS)
+    return _scan(code, forbidden), _scan(code, suspicious)
 
 
-def assert_clean(code):
+def assert_clean(code, patterns=None):
     """Raise GuardRejection if the code can reach sealed data. Return warnings."""
-    rejections, warnings = check_code(code)
+    rejections, warnings = check_code(code, patterns)
     if rejections:
         detail = "\n".join(f"  line {ln}: {why}\n      {src}"
                            for why, ln, src in rejections)
