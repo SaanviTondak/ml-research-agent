@@ -16,7 +16,7 @@ So the constraint is enforced structurally rather than by policy.
 
 ## How it works
 
-`agent/firewall.py` materialises `work/data_visible/`, a data directory that
+`tasks/kuairand/firewall.py` materialises `work/data_visible/`, a data directory that
 
 - uses the organizer's exact filenames and column layout, so the untouched
   starter kit (`data.py`, `encode`, `evaluate.py`) works against it verbatim, and

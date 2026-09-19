@@ -29,7 +29,16 @@ jobs:
 
       # These tests are deliberately data-free. KuaiRand-Pure is ~1 GB, is not
       # committed, and its download hosts are unreachable from CI - so the
-      # suite covers the search policy, the pre-execution checks and the
-      # submission contract, and leaves the end-to-end run to harness_check.py.
+      # KuaiRand-specific end-to-end run stays in harness_check.py, which needs
+      # the dataset and is run locally.
+      #
+      # Everything else now runs here. tasks/synthetic generates its own data
+      # in under a second and the loop tests stub the model, so CI exercises
+      # the full draft/improve/debug state machine, convergence, the journal
+      # and the noise-floor calibration - none of which had automated coverage
+      # before, despite being where every production failure actually happened.
       - name: Run tests
         run: python -m pytest tests/ -v
+
+      - name: Whole loop, end to end, on the synthetic task
+        run: python -m pytest tests/test_loop_end_to_end.py tests/test_calibration.py -v
