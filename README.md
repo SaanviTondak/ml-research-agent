@@ -2,9 +2,12 @@
 
 An agent that runs the machine-learning research loop by itself: read the
 problem, explore the data, form a hypothesis, write the code, train, evaluate,
-read its own stack traces, and try again — with no human in the loop. Built for
-**TikTok TechJam Track 2** (solo entry) against the KuaiRand-Pure within-user
-ranking benchmark and the organizers' Factorization Machine baseline.
+read its own stack traces, and try again — with no human in the loop.
+
+It is **task-agnostic**: the same unmodified loop runs on a recommender ranking
+benchmark, a synthetic regression problem, or any CSV you point it at. It was
+built for **TikTok TechJam Track 2** (solo entry) against the KuaiRand-Pure
+within-user ranking benchmark, and that run is what the results below describe.
 
 [![tests](https://github.com/SaanviTondak/ml-research-agent/actions/workflows/tests.yml/badge.svg)](https://github.com/SaanviTondak/ml-research-agent/actions/workflows/tests.yml)
 
@@ -28,6 +31,9 @@ the loop, not the model — including the way it failed, which is documented
 rather than trimmed.
 
 > Python 3.9+ and numpy. No torch, no pandas, no sklearn, no GPU.
+
+**Want to run it on your own problem?** Jump to
+[It runs on your problem too](#it-runs-on-your-problem-too).
 
 ---
 
@@ -270,21 +276,98 @@ An edit at that boundary is exactly where a leak would hide.
 
 ---
 
+## It runs on your problem too
+
+The agent knows nothing about recommendation. `agent/state.py`, `agent/llm.py`
+and `agent/executor.py` contain **no benchmark-specific code** — the only
+mentions of KuaiRand anywhere in them are two docstrings citing it as the
+example that motivated a design choice. A task is a directory implementing
+[`agent/task.py`](agent/task.py), and the interface is just the set of calls
+the loop already made.
+
+| task | metric | direction | structure | submission |
+|---|---|---|---|---|
+| [`tasks/kuairand/`](tasks/kuairand/) | mean(GAUC, nDCG@5) | maximise | per-user groups | 4 columns |
+| [`tasks/tabular/`](tasks/tabular/) | rmse · mae · logloss · auc · accuracy | either | per-row | 2 columns |
+| [`tasks/synthetic/`](tasks/synthetic/) | RMSE | minimise | per-row | 2 columns |
+
+### Bring your own CSV — no code required
+
+Put `train.csv`, `valid.csv` and `test.csv` in a directory, each with a header
+row and a target column:
+
+```bash
+python3 -m agent.loop --task tabular \
+    --data ./mydata --target churn --metric auc
+```
+
+That is the whole setup. It builds the firewall for you — the held-out target
+column is **removed from the file on disk**, not masked — writes a briefing from
+your own column names, fits a linear reference for the agent to beat, and
+enforces the submission contract. Numeric and categorical columns and missing
+values are all handled; get a flag wrong and you get a sentence, not a
+traceback.
+
+### Why it can travel: it measures the noise before it searches
+
+Portability is not a refactor. Every decision threshold in the search was
+silently denominated in one benchmark's noise floor — `VERIFY_MARGIN = 0.0008`
+*was* KuaiRand's seed sigma. On a task where sigma is 0.05 that agent verifies
+on every node and never converges.
+
+[`agent/calibrate.py`](agent/calibrate.py) now runs the task's own reference
+implementation on k seeds before the first search step, measures the noise, and
+derives the thresholds from it. Fed only measurements, it regenerates the
+constants that were tuned by hand over two real runs:
+
+| constant | hand-tuned | derived from measurement |
+|---|---|---|
+| `VERIFY_MARGIN` | 0.0008 | **0.000774** |
+| `EPS` | 0.002 (organizers') | **0.00195** |
+| `PROTECTION_WRITE_OFF` | 0.006 | **0.006000** |
+
+It separates two noise sources the original policy conflated, and that turned
+up something about the benchmark it was tuned for: **evaluation-set noise
+(0.00070) is the same size as seed noise (0.00063), and the policy had only
+ever been looking at one of them.** A one-seed-vs-one-seed comparison between
+two designs carries about twice the noise every threshold assumed.
+
+Guard rails, because this is the part that can quietly go wrong:
+
+- a **declared** epsilon — a competition's stated stopping rule — is reported
+  in sigma but never overruled;
+- a **deterministic** task gets finite thresholds *and* has seed verification
+  switched off entirely, because re-running returns the identical number;
+- a **discrete** metric never gets a threshold finer than one grid step;
+- a missing, broken or too-slow reference **skips** calibration, keeps the
+  declared constants, and says so in the run log.
+
+Full detail, including the honest limits, in
+[`docs/generalization.md`](docs/generalization.md).
+
+---
+
 ## Repository layout
 
 ```
-agent/
-  paths.py            canonical paths; the sealed directory named in one place
-  firewall.py         builds work/data_visible/
-  verify_firewall.py  independent re-verification of the above
+agent/                  the agent. no benchmark knowledge lives here.
   loop.py             the search: draft / improve / debug over a solution tree
+  state.py            the solution journal (the tree) + the search policy
+  task.py             what a task must provide; the generic Score
+  calibrate.py        measures the task's noise floor, derives the thresholds
   llm.py              model client, failover chain, token accounting
-  prompts.py          the agent's briefing and per-stage prompts
   executor.py         runs untrusted candidate code under a hard timeout
   guard.py            static check on generated code before it executes
-  scorer.py           submission-contract validation + the official metric
-  state.py            the solution journal (the tree)
   journal.py          append-only JSONL run log, fsync per event
+  prompts.py          the shared prompt templates each task fills in
+  scorer.py           submission-contract validation
+  registry.py         builds a task from command-line arguments
+  paths.py            canonical paths; the sealed directory named in one place
+  verify_firewall.py  independent re-verification of the KuaiRand firewall
+tasks/                  everything benchmark-specific
+  kuairand/           the TechJam benchmark: briefing, date-based firewall
+  tabular/            bring your own CSV: metrics, reference, firewall
+  synthetic/          a task whose noise floor is a knob, for calibration tests
 candidates/
   fm_baseline.py      candidate 0: the organizers' FM, in the contract
   agent_best.py       the submitted model, as the agent wrote it
@@ -295,12 +378,14 @@ submission/
   run_log.md          the live run log
   journal.jsonl       the raw event stream
   results.md          every attempt, and the sealed test result
-tests/                pytest suite - search policy and pre-execution checks
+tests/                113 tests; no dataset and no API key required
 tools/                preflight and rendering utilities
 kuairand-starter-kit/ the organizers' code, unmodified
-harness_check.py      9 end-to-end checks, no API key required
+harness_check.py      9 end-to-end checks against the real dataset
 docs/
-  postmortem.md       why 25 of 34 iterations were wasted
+  generalization.md   the Task interface and the calibration, with its limits
+  postmortem.md       the search-policy defects, and how they were found
+  final_02_results.md the second run, and what it did and did not prove
   firewall.md         the leak-prevention design
   interventions.md    the honest autonomy record
   phase0_baseline_repro.md
@@ -315,10 +400,27 @@ committed.
 
 ```bash
 pip install numpy pytest
-python3 -m pytest tests/            # no dataset, no API key, ~0.1 s
+python3 -m pytest tests/            # 113 tests, no dataset, no API key, ~40 s
 ```
 
-Then, with the dataset in place:
+The suite runs the whole loop end to end against the synthetic task with a
+stubbed model, so the draft/improve/debug state machine, convergence and the
+calibration are all covered without a dataset or a key.
+
+### On your own data
+
+```bash
+python3 -m agent.loop --task tabular \
+    --data ./mydata --target churn --metric auc
+```
+
+Needs a model API key (below), and `mydata/` containing `train.csv` and
+`valid.csv` with a header row. `test.csv` is optional; if present, its target
+column is stripped on the way in.
+
+### On the TechJam benchmark
+
+With the dataset in place:
 
 ```bash
 # Place KuaiRand-Pure under kuairand-starter-kit/KuaiRand-Pure/data/
@@ -352,8 +454,14 @@ To run the agent itself you need a Gemini API key in `.env`:
 
 ```bash
 python3 tools/check_llm.py          # verify the key, endpoint and failover chain
-python3 -m agent.loop --run_dir work/runs/my_run   # the autonomous loop
+python3 -m agent.loop --run_dir work/runs/my_run           # KuaiRand (default)
+python3 -m agent.loop --task tabular --data ./mydata \
+    --target churn --metric auc                            # your own CSV
+python3 -m agent.loop --help                               # all tasks and flags
 ```
+
+The model client sits behind a swappable `Backend` interface
+([`agent/llm.py`](agent/llm.py)); Gemini is the one implementation shipped.
 
 ---
 
