@@ -52,6 +52,7 @@ from agent.guard import (assert_clean, assert_parses, GuardRejection,
 from agent.journal import Journal, new_run_dir, render_markdown
 from agent.llm import (LLM, GeminiBackend, TokenLedger, LLMError,
                        QuotaExhausted, extract_code, DEFAULT_MODEL)
+from agent import registry
 from agent.calibrate import calibrate, write as write_calibration
 from agent.state import Node, PolicyConfig, SolutionJournal
 from agent.task import ContractError, IntegrityError
@@ -713,7 +714,14 @@ class AgentLoop:
 
 
 def main():
-    ap = argparse.ArgumentParser(description="Run the autonomous research loop.")
+    ap = argparse.ArgumentParser(
+        description="Run the autonomous research loop.",
+        epilog="examples:\n"
+               "  python3 -m agent.loop\n"
+               "  python3 -m agent.loop --task tabular --data ./mydata "
+               "--target churn --metric auc\n",
+        formatter_class=argparse.RawDescriptionHelpFormatter)
+    registry.add_arguments(ap)
     ap.add_argument("--model", default=DEFAULT_MODEL)
     ap.add_argument("--max_iterations", type=int, default=MAX_ITERATIONS)
     ap.add_argument("--max_hours", type=float, default=MAX_HOURS)
@@ -721,12 +729,16 @@ def main():
     ap.add_argument("--n_drafts", type=int, default=N_DRAFTS)
     ap.add_argument("--skip_eda", action="store_true")
     ap.add_argument("--run_dir", default=None)
+    ap.add_argument("--no_calibrate", action="store_true",
+                    help="keep the declared thresholds instead of measuring "
+                         "the task's noise floor")
     a = ap.parse_args()
 
-    AgentLoop(run_dir=a.run_dir, model=a.model,
+    AgentLoop(run_dir=a.run_dir, model=a.model, task=registry.build(a),
               max_iterations=a.max_iterations, max_hours=a.max_hours,
               candidate_timeout_s=a.candidate_timeout_s,
-              n_drafts=a.n_drafts, skip_eda=a.skip_eda).run()
+              n_drafts=a.n_drafts, skip_eda=a.skip_eda,
+              calibrate_policy=not a.no_calibrate).run()
 
 
 if __name__ == "__main__":

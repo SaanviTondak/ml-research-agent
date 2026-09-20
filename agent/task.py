@@ -37,6 +37,7 @@ scorer. `to_dict()` is what gets written into the journal and into
 keys are a frozen wire format: KuaiRand must keep emitting exactly
 GAUC / nDCG@5 / primary / users / rows / split, which it does.
 """
+import importlib.util
 import statistics
 import sys
 from dataclasses import dataclass, field
@@ -44,6 +45,33 @@ from pathlib import Path
 
 if __package__ in (None, ""):
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
+
+def load_metric_module(path, alias=None):
+    """Import a task's evaluate.py by *path*, not by bare module name.
+
+    Three tasks each ship a file called evaluate.py. Loading them with
+    `sys.path.insert(...)` plus `from evaluate import ...` means the first one
+    imported wins sys.modules and every later task silently scores with
+    somebody else's metric. That is invisible in a single-task process and
+    wrong the moment two tasks meet - which is exactly what the test suite is.
+
+    Candidates still do a bare `import evaluate`; they run in their own
+    subprocess with the task's directory on PYTHONPATH, so nothing collides
+    there and the contract shown to the model is unchanged.
+    """
+    path = Path(path)
+    name = alias or f"_metric_{path.parent.name}_{path.stem}"
+    cached = sys.modules.get(name)
+    if cached is not None and getattr(cached, "__file__", None) == str(path):
+        return cached
+    spec = importlib.util.spec_from_file_location(name, path)
+    if spec is None or spec.loader is None:
+        raise ImportError(f"cannot load metric module from {path}")
+    mod = importlib.util.module_from_spec(spec)
+    sys.modules[name] = mod
+    spec.loader.exec_module(mod)
+    return mod
 
 
 @dataclass
@@ -151,17 +179,30 @@ class Task:
         """Everything factual the agent is given about the task."""
         raise NotImplementedError
 
+    # The four prompt builders below are the same for every task: take the
+    # task's briefing and pour it into the shared template. They were abstract
+    # at first, and both tasks then implemented them byte-identically - which
+    # is the signal that they belong here, not in each subclass. A task only
+    # has to supply briefing() and system_prompt(); override one of these only
+    # if the *structure* of the ask differs, not the content.
     def explore_prompt(self):
-        raise NotImplementedError
+        from agent import prompts
+        return prompts.explore_prompt(self.briefing())
 
     def draft_prompt(self, journal_summary, eda="", n_existing=0, lineages=""):
-        raise NotImplementedError
+        from agent import prompts
+        return prompts.draft_prompt(self.briefing(), journal_summary, eda=eda,
+                                    n_existing=n_existing, lineages=lineages)
 
     def improve_prompt(self, node, journal_summary, eda=""):
-        raise NotImplementedError
+        from agent import prompts
+        return prompts.improve_prompt(self.briefing(), node, journal_summary,
+                                      eda=eda)
 
     def debug_prompt(self, node, journal_summary, attempt=1, max_attempts=3):
-        raise NotImplementedError
+        from agent import prompts
+        return prompts.debug_prompt(self.briefing(), node, journal_summary,
+                                    attempt=attempt, max_attempts=max_attempts)
 
     def extract_hypothesis(self, text):
         from agent import prompts
@@ -194,11 +235,22 @@ class Task:
         return None
 
     def eval_n_units(self, contributions):
-        raise NotImplementedError
+        """How many evaluation units there are. Generic for a dict of arrays."""
+        if isinstance(contributions, dict) and contributions:
+            return len(next(iter(contributions.values())))
+        return len(contributions)
 
     def eval_aggregate(self, contributions, idx):
-        """Recompute the primary metric over a resampled index array."""
-        raise NotImplementedError
+        """Recompute the primary metric over a resampled index array.
+
+        Only reached by a task that overrides eval_contributions; a metric is
+        rarely a plain mean of per-row numbers (RMSE is the root of one, a
+        grouped AUC is a ratio of weighted sums), so it cannot be defaulted.
+        """
+        raise NotImplementedError(
+            f"{type(self).__name__} returns eval_contributions but does not "
+            f"implement eval_aggregate, so evaluation noise cannot be "
+            f"measured. Implement it, or return None from eval_contributions.")
 
     # --------------------------------------------------------------- scoring
     def integrity_check(self):

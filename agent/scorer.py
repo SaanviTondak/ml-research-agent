@@ -26,7 +26,8 @@ if __package__ in (None, ""):
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from agent.paths import EVALUATE_PY, VISIBLE_DATA, add_starter_to_path
-from agent.task import ContractError, IntegrityError, Score
+from agent.task import (ContractError, IntegrityError, Score,
+                        load_metric_module)
 
 HEADER = ["row_id", "user_id", "video_id", "score"]
 
@@ -120,9 +121,7 @@ def score_file(path, split="valid", data_dir=None, allow_test=False):
     rows = load_eval_rows(data_dir, split)
     scores = read_scores(path, rows)
 
-    add_starter_to_path()
-    from evaluate import evaluate
-    r = evaluate([x[1] for x in rows], [x[6] for x in rows], scores)
+    r = load_metric_module(EVALUATE_PY).evaluate([x[1] for x in rows], [x[6] for x in rows], scores)
     # to_dict() must keep emitting GAUC / nDCG@5 / primary / users / rows /
     # split: submission/final_result.json records exactly those keys, and
     # seal/final_score.py writes them into the audit trail.

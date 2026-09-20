@@ -31,9 +31,9 @@ if __package__ in (None, ""):
 
 import numpy as np
 
-from agent import prompts
 from agent.paths import WORK
-from agent.task import ContractError, IntegrityError, Score, Task
+from agent.task import (ContractError, IntegrityError, Score, Task,
+                        load_metric_module)
 
 HERE = Path(__file__).resolve().parent
 HEADER = ["row_id", "score"]
@@ -177,21 +177,6 @@ outside it beyond a short HYPOTHESIS line.
 Be concrete and empirical. Prefer a clean test of one idea over a bundle of \
 changes you cannot attribute."""
 
-    def explore_prompt(self):
-        return prompts.explore_prompt(self.briefing())
-
-    def draft_prompt(self, journal_summary, eda="", n_existing=0, lineages=""):
-        return prompts.draft_prompt(self.briefing(), journal_summary, eda=eda,
-                                    n_existing=n_existing, lineages=lineages)
-
-    def improve_prompt(self, node, journal_summary, eda=""):
-        return prompts.improve_prompt(self.briefing(), node, journal_summary,
-                                      eda=eda)
-
-    def debug_prompt(self, node, journal_summary, attempt=1, max_attempts=3):
-        return prompts.debug_prompt(self.briefing(), node, journal_summary,
-                                    attempt=attempt, max_attempts=max_attempts)
-
     # --------------------------------------------------------------- running
     def reference_implementation(self):
         return HERE / "reference.py"
@@ -223,9 +208,8 @@ changes you cannot attribute."""
             raise IntegrityError("refusing to score the held-out split")
         y = self._targets(split)
         preds = self._read_scores(out_path, len(y))
-        sys.path.insert(0, str(HERE))
-        from evaluate import evaluate
-        r = evaluate(y, preds, quantum=self.quantum)
+        ev = load_metric_module(HERE / "evaluate.py")
+        r = ev.evaluate(y, preds, quantum=self.quantum)
         return Score(primary=r["primary"],
                      metrics={"RMSE": r["RMSE"], "MAE": r["MAE"]},
                      split=split, rows=r["rows"], groups=r["groups"],

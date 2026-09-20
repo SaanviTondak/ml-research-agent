@@ -20,10 +20,10 @@ from pathlib import Path
 if __package__ in (None, ""):
     sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
-from agent import prompts, scorer
-from agent.paths import (CANDIDATES, REAL_DATA, STARTER, VISIBLE_DATA,
-                         add_starter_to_path)
-from agent.task import Task
+from agent import scorer
+from agent.paths import (CANDIDATES, EVALUATE_PY, REAL_DATA, STARTER,
+                         VISIBLE_DATA)
+from agent.task import Task, load_metric_module
 from tasks.kuairand import briefing as kr
 
 
@@ -64,21 +64,6 @@ class KuaiRandTask(Task):
     def briefing(self):
         return kr.briefing()
 
-    def explore_prompt(self):
-        return prompts.explore_prompt(self.briefing())
-
-    def draft_prompt(self, journal_summary, eda="", n_existing=0, lineages=""):
-        return prompts.draft_prompt(self.briefing(), journal_summary, eda=eda,
-                                    n_existing=n_existing, lineages=lineages)
-
-    def improve_prompt(self, node, journal_summary, eda=""):
-        return prompts.improve_prompt(self.briefing(), node, journal_summary,
-                                      eda=eda)
-
-    def debug_prompt(self, node, journal_summary, attempt=1, max_attempts=3):
-        return prompts.debug_prompt(self.briefing(), node, journal_summary,
-                                    attempt=attempt, max_attempts=max_attempts)
-
     # --------------------------------------------------------------- running
     def reference_implementation(self):
         return CANDIDATES / "fm_baseline.py"
@@ -103,8 +88,8 @@ class KuaiRandTask(Task):
         """
         import collections
         import numpy as np
-        add_starter_to_path()
-        from evaluate import auc, ndcg_at_k
+        ev = load_metric_module(EVALUATE_PY)
+        auc, ndcg_at_k = ev.auc, ev.ndcg_at_k
 
         rows = scorer.load_eval_rows(self.visible_data_dir(), split)
         preds = scorer.read_scores(out_path, rows)

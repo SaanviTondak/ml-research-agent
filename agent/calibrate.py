@@ -86,6 +86,7 @@ MAX_SEEDS = 10
 DEFAULT_CALIB_FRACTION = 0.05     # share of the run budget calibration may use
 CALIB_CAP_S = 600.0
 BOOTSTRAP_B = 400
+RELATIVE_EPS_FLOOR = 1e-3   # last-resort eps as a fraction of |score|
 
 # sd of a k-sample estimate is itself noisy: relative SE is 1/sqrt(2(k-1)).
 # Inflate to a one-sided upper bound so the thresholds err wide. Understating
@@ -345,6 +346,18 @@ def calibrate(task, run_dir, max_hours=6.0, timeout_s=600, log=None,
         cal.eps_provisional = True
         cal.sigma_delta = cal.sigma_eval_abs / math.sqrt(2)
         cal.eps_derived = max(EPS_Z * cal.sigma_delta, cal.quantum)
+        if cal.eps_derived <= 0.0:
+            # Deterministic *and* no eval bootstrap: there is genuinely no
+            # measurement to work from. A zero epsilon is not a safe answer -
+            # it makes convergence demand exactly no improvement - so fall
+            # back to a small fraction of the metric's own magnitude and say
+            # so loudly. A task that lands here should implement
+            # eval_contributions.
+            cal.eps_derived = max(RELATIVE_EPS_FLOOR * abs(scores[0]),
+                                  sys.float_info.epsilon)
+            cal.reason = (cal.reason + "; " if cal.reason else "") + (
+                "no noise could be measured (deterministic reference and no "
+                "eval bootstrap); eps is a relative-magnitude fallback")
     else:
         cal.verify_margin = max(VERIFY_Z * cal.sigma_policy, cal.quantum)
         cal.eps_derived = max(EPS_Z * cal.sigma_delta, cal.quantum)
